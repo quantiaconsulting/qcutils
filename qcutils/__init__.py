@@ -1,6 +1,6 @@
 import yaml
 
-def init_session(spark_session, cf_path = "/home/jovyan/utils/config.yaml"):
+def init_session(spark_session, cf_path = "/home/jovyan/materials/utils/config.yaml"):
 
     with open(cf_path, 'r') as ymlfile:
         cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
