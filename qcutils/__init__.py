@@ -13,6 +13,6 @@ def init_session(spark_session, cf_path = "/home/jovyan/materials/utils/config.y
     hadoop_conf.set("fs.s3a.secret.key", aws_secret)
     hadoop_conf.set("fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
 
-    spark_sessions.conf.set("spark.sql.repl.eagerEval.enabled", True)
+    spark_session.conf.set("spark.sql.repl.eagerEval.enabled", True)
     
     return
