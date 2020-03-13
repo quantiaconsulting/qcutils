@@ -72,11 +72,15 @@ def list_s3_bucket_objects(bucket_name='quantia-master', prefix='training', limi
     for obj in objects.get('Contents')[:limit]:
         print(obj.get('Key')) 
 
-def print_s3_bucket_object(key, bucket_name='quantia-master', size=1000):
+def print_s3_bucket_object(key, bucket_name='quantia-master', size=1000, decode=True):
     s3 = boto3.client('s3')
     obj = s3.get_object(
         Bucket=bucket_name, 
         Key=key)
 
-    body = obj.get('Body').read(size)
+    if decode:
+        body = obj.get('Body').read(size).decode(encoding="utf-8",errors="ignore")
+    else:
+        body = obj.get('Body').read(size)
+    
     print(body)
