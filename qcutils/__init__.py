@@ -1,6 +1,9 @@
 import yaml
 from confluent_kafka.admin import AdminClient, NewTopic
 from confluent_kafka import KafkaError
+import boto3
+import io
+import s3fs
 
 def init_session(spark_session, cf_path = "/home/jovyan/materials/utils/config.yaml"):
 
