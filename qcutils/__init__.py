@@ -71,7 +71,7 @@ def list_s3_bucket_objects(bucket_name='quantia-master', prefix='training', limi
     for obj in objects.get('Contents')[:limit]:
         print(obj.get('Key')) 
 
-def print_s3_bucket_object(bucket_name='quantia-master', key, size=1000):
+def print_s3_bucket_object(key, bucket_name='quantia-master', size=1000):
     obj = s3.get_object(
         Bucket=bucket_name, 
         Key=key)
