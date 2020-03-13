@@ -61,3 +61,17 @@ def create_kafka_topic(conf, topic, partitions=4,replication=3):
                 print("Failed to create topic {}: {}".format(topic, e))
             if e.args[0].code() == KafkaError.TOPIC_ALREADY_EXISTS:
                 print("{}".format(e))
+
+def list_s3_bucket_objects(bucket_name='quantia-master', prefix='training', limit=10):
+    objects = s3.list_objects_v2(Bucket=bucket_name, Prefix =prefix)
+
+    for obj in objects.get('Contents')[:limit]:
+        print(obj.get('Key')) 
+
+def print_s3_bucket_object(bucket_name='quantia-master', key, size=1000):
+    obj = s3.get_object(
+        Bucket=bucket_name, 
+        Key=key)
+
+    body = obj.get('Body').read(size)
+    print(body)
