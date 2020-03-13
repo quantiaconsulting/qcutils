@@ -42,7 +42,7 @@ def init_spark_session(spark_session, cf_path = "/home/jovyan/materials/utils/co
     
     return
 
-def create_kafka_topic(conf, topic, partitions=4,replication=1):
+def create_kafka_topic(conf, topic, partitions=4,replication=3):
     
     a = AdminClient(conf)
     fs = a.create_topics([NewTopic(
