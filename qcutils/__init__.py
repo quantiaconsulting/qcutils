@@ -5,6 +5,20 @@ import boto3
 import io
 import s3fs
 
+def read_config_value(key,cf_path = "/home/jovyan/materials/utils/config.yaml"):
+    with open(cf_path, 'r') as ymlfile:
+        cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
+    
+    if key.find(".") >= 0:
+        keys = key.split(".")
+        value = cfg
+        for str in keys:
+            value = value[str]         
+    else:
+        value = cfg[str]
+
+    return value
+
 def init_session(spark_session, cf_path = "/home/jovyan/materials/utils/config.yaml"):
 
     with open(cf_path, 'r') as ymlfile:
