@@ -61,9 +61,9 @@ def init_spark_session(spark_session, cf_path = "/home/jovyan/materials/utils/co
 
 def create_kafka_topic(topic, partitions=4,replication=3):
 
-    servers=qcutils.read_config_value("confluent.server") + ":" + str(qcutils.read_config_value("confluent.port"))
-    username=qcutils.read_config_value("confluent.access.key")
-    password=qcutils.read_config_value("confluent.access.secret")
+    servers=read_config_value("confluent.server") + ":" + str(read_config_value("confluent.port"))
+    username=read_config_value("confluent.access.key")
+    password=read_config_value("confluent.access.secret")
 
     adminconf = {
             'bootstrap.servers': servers,
