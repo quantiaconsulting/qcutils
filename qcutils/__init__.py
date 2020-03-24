@@ -59,19 +59,25 @@ def init_spark_session(spark_session, cf_path = "/home/jovyan/materials/utils/co
     
     return
 
-def create_kafka_topic(topic, partitions=4,replication=3):
+def create_kafka_topic(topic, security=False, cf_path = "/home/jovyan/materials/utils/config.yaml", partitions=4,replication=3):
 
-    servers=read_config_value("confluent.server") + ":" + str(read_config_value("confluent.port"))
-    username=read_config_value("confluent.access.key")
-    password=read_config_value("confluent.access.secret")
+    servers=read_config_value(key="confluent.server", cf_path=cf_path) + ":" + str(read_config_value(key="confluent.port", cf_path=cf_path))
+    
+    if secure:
+        username=read_config_value(key="confluent.access.key", cf_path=cf_path)
+        password=read_config_value(key="confluent.access.secret", cf_path=cf_path)
 
-    adminconf = {
-            'bootstrap.servers': servers,
-            'sasl.mechanisms': 'PLAIN',
-            'security.protocol': 'SASL_SSL',
-            'sasl.username': username,
-            'sasl.password': password 
-            }
+        adminconf = {
+                'bootstrap.servers': servers,
+                'sasl.mechanisms': 'PLAIN',
+                'security.protocol': 'SASL_SSL',
+                'sasl.username': username,
+                'sasl.password': password 
+                }
+    else:
+        adminconf = {
+                'bootstrap.servers': servers
+                }
 
     a = AdminClient(adminconf)
     fs = a.create_topics([NewTopic(
