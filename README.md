@@ -42,7 +42,7 @@ Python utils for educational project
 
 * `topic` - `String`: name of the new kafka topic you want to create
 	* Required: yes 
-* `secure` - `boolean`: flag: if `True`, the server is secured via SASL protocol and you need to specify `sasl.username` and `sasl.password` in the configuration file.
+* `security` - `boolean`: flag: if `True`, the server is secured via SASL protocol and you need to specify `sasl.username` and `sasl.password` in the configuration file.
 	* Required: no  
 	* default value: `False`
 * `cf_path` - `String`: absolute path of the configuration file 

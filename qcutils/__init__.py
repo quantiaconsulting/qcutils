@@ -63,7 +63,7 @@ def create_kafka_topic(topic, security=False, cf_path = "/home/jovyan/materials/
 
     servers=read_config_value(key="confluent.server", cf_path=cf_path) + ":" + str(read_config_value(key="confluent.port", cf_path=cf_path))
     
-    if secure:
+    if security:
         username=read_config_value(key="confluent.access.key", cf_path=cf_path)
         password=read_config_value(key="confluent.access.secret", cf_path=cf_path)
 
