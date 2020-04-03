@@ -59,7 +59,7 @@ def init_spark_session(spark_session, cf_path = "/home/jovyan/materials/utils/co
     
     return
 
-def create_kafka_topic(topic, security=False, cf_path = "/home/jovyan/materials/utils/config.yaml", partitions=4,replication=3):
+def create_kafka_topic(topic, security=False, cf_path = "/home/jovyan/materials/utils/config.yaml", partitions=1,replication=1):
 
     kconf_bkey = 'kafka'
     servers=read_config_value(key="{}.server".format(kconf_bkey), cf_path=cf_path) + ":" + str(read_config_value(key="{}.port".format(kconf_bkey), cf_path=cf_path))
