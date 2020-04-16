@@ -1,10 +1,11 @@
-from setuptools import setup
+import setuptools
 
-setup(name='qcutils',
-      version='0.2',
+setuptools.setup(name='qcutils',
+      version='0.1.1',
       description='Utilities for python educational project',
       author='Marco Balduini',
       author_email='marco.balduini@quantiaconsulting.com',
       license='Apache2',
-      packages=['qcutils'],
-      zip_safe=False)
+      packages=setuptools.find_packages(),
+      python_requires='>=3.6',
+      )
