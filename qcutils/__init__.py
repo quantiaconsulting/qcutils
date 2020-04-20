@@ -4,6 +4,9 @@ from confluent_kafka import KafkaError
 import boto3
 import io
 import s3fs
+from tabulate import tabulate
+
+#Generic utils
 
 def read_config_value(key,cf_path = "/home/jovyan/materials/utils/config.yaml"):
     with open(cf_path, 'r') as ymlfile:
@@ -18,6 +21,8 @@ def read_config_value(key,cf_path = "/home/jovyan/materials/utils/config.yaml"):
         value = cfg[str]
 
     return value
+
+# Spark utils
 
 def init_spark_session(spark_session, cf_path = "/home/jovyan/materials/utils/config.yaml"):
 
@@ -38,6 +43,26 @@ def init_spark_session(spark_session, cf_path = "/home/jovyan/materials/utils/co
     spark_session.conf.set("spark.sql.repl.eagerEval.enabled", True)
     
     return
+
+# Kafka utils
+
+def kafka_srv_description(cf_path = "/home/jovyan/materials/utils/config.yaml"):
+
+    kconf_bkey = 'kafka'
+
+    ksrv = read_config_value(key="{}.server".format(kconf_bkey), cf_path=cf_path)
+    ksrvp = str(read_config_value(key="{}.port".format(kconf_bkey), cf_path=cf_path))
+
+    z = read_config_value(key="{}.zookeper.server".format(kconf_bkey), cf_path=cf_path)
+    zp = str(read_config_value(key="{}.zookeper.port".format(kconf_bkey), cf_path=cf_path))
+
+    sr_temp=read_config_value("{}.schema_registry.url".format(kconf_bkey), cf_path=cf_path).split(':')
+    sr=sr_temp[0]+':'+sr_temp[1]
+    srp=sr_temp[2]
+
+    l = [["Kafka", ksrv, ksrvp], ["Zookeeper", z, zp], ["Schema Registry", sr, srp]]
+    table = tabulate(l, headers=['Service', 'Address', 'Port'], tablefmt='pretty')
+    print(table)
 
 def create_kafka_topic(topic, security=False, cf_path = "/home/jovyan/materials/utils/config.yaml", partitions=1,replication=1):
 
@@ -77,6 +102,9 @@ def create_kafka_topic(topic, security=False, cf_path = "/home/jovyan/materials/
                 print("Failed to create topic {}: {}".format(topic, e))
             if e.args[0].code() == KafkaError.TOPIC_ALREADY_EXISTS:
                 print("{}".format(e))
+
+
+# S3 utils
 
 def list_s3_bucket_objects(bucket_name='quantia-master', prefix='training', limit=10):
     s3 = boto3.client('s3')
