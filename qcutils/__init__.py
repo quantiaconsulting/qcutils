@@ -48,21 +48,24 @@ def init_spark_session(spark_session, cf_path = "/home/jovyan/materials/utils/co
 
 def kafka_srv_description(cf_path = "/home/jovyan/materials/utils/config.yaml"):
 
-    kconf_bkey = 'kafka'
+    try:
+        kconf_bkey = 'kafka'
 
-    ksrv = read_config_value(key="{}.server".format(kconf_bkey), cf_path=cf_path)
-    ksrvp = str(read_config_value(key="{}.port".format(kconf_bkey), cf_path=cf_path))
+        ksrv = read_config_value(key="{}.server".format(kconf_bkey), cf_path=cf_path)
+        ksrvp = str(read_config_value(key="{}.port".format(kconf_bkey), cf_path=cf_path))
 
-    z = read_config_value(key="{}.zookeper.server".format(kconf_bkey), cf_path=cf_path)
-    zp = str(read_config_value(key="{}.zookeper.port".format(kconf_bkey), cf_path=cf_path))
+        z = read_config_value(key="{}.zookeper.server".format(kconf_bkey), cf_path=cf_path)
+        zp = str(read_config_value(key="{}.zookeper.port".format(kconf_bkey), cf_path=cf_path))
 
-    sr_temp=read_config_value("{}.schema_registry.url".format(kconf_bkey), cf_path=cf_path).split(':')
-    sr=sr_temp[0]+':'+sr_temp[1]
-    srp=sr_temp[2]
+        sr_temp=read_config_value("{}.schema_registry.url".format(kconf_bkey), cf_path=cf_path).split(':')
+        sr=sr_temp[0]+':'+sr_temp[1]
+        srp=sr_temp[2]
 
-    l = [["Kafka", ksrv, ksrvp], ["Zookeeper", z, zp], ["Schema Registry", sr, srp]]
-    table = tabulate(l, headers=['Service', 'Address', 'Port'], tablefmt='pretty')
-    print(table)
+        l = [["Kafka", ksrv, ksrvp], ["Zookeeper", z, zp], ["Schema Registry", sr, srp]]
+        table = tabulate(l, headers=['Service', 'Address', 'Port'], tablefmt='pretty')
+        print(table)
+    except:
+        print("No kafka service available")
 
 def create_kafka_topic(topic, security=False, cf_path = "/home/jovyan/materials/utils/config.yaml", partitions=1,replication=1):
 

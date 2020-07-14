@@ -1,6 +1,10 @@
 # qcutils
 Python utils for educational project
 
+## Build the distribution
+
+`python3 setup.py sdist bdist_wheel`
+
 ## Available utils
 
 ### `read_config_value`
@@ -28,6 +32,18 @@ Python utils for educational project
 
 * `spark_session`  - `SparkSession`: the key of the configuration you nned to extract
 	* Required: yes 
+* `cf_path` - `String`: absolute path of the configuration file 
+	* Required: no  
+	* default value: `/home/jovyan/materials/utils/config.yaml`
+
+### `kafka_srv_description`
+
+**Signature**: `kafka_srv_description(cf_path = "/home/jovyan/materials/utils/config.yaml")`
+
+**Description**: Show a table with all the kafka services available in the environment
+
+**Args**:
+
 * `cf_path` - `String`: absolute path of the configuration file 
 	* Required: no  
 	* default value: `/home/jovyan/materials/utils/config.yaml`
