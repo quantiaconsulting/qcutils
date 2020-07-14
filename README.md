@@ -9,7 +9,7 @@ Python utils for educational project
 
 ### `read_config_value`
 
-**Signature**: `read_config_value(key,cf_path = "/home/jovyan/materials/utils/config.yaml"`
+**Signature**: `read_config_value(key,cf_path)`
 
 **Description**: Read, from a yaml-style config file, the value related to the `key`
 
@@ -19,12 +19,12 @@ Python utils for educational project
 	* Required: yes 
 * `cf_path` - `String` : absolute path of the configuration file 
 	* Required: no  
-	* default value: `/home/jovyan/materials/utils/config.yaml`
+	* default value: `/home/jovyan/utils/config.yaml`
 
 
 ### `init_spark_session`
 
-**Signature**: `init_spark_session(spark_session, cf_path = "/home/jovyan/materials/utils/config.yaml")`
+**Signature**: `init_spark_session(spark_session, cf_path)`
 
 **Description**: Initialize an already existing SparkSession with the information to read from S3 unsing the s3a filesystem
 
@@ -34,11 +34,11 @@ Python utils for educational project
 	* Required: yes 
 * `cf_path` - `String`: absolute path of the configuration file 
 	* Required: no  
-	* default value: `/home/jovyan/materials/utils/config.yaml`
+	* default value: `/home/jovyan/utils/config.yaml`
 
 ### `kafka_srv_description`
 
-**Signature**: `kafka_srv_description(cf_path = "/home/jovyan/materials/utils/config.yaml")`
+**Signature**: `kafka_srv_description(cf_path)`
 
 **Description**: Show a table with all the kafka services available in the environment
 
@@ -46,11 +46,11 @@ Python utils for educational project
 
 * `cf_path` - `String`: absolute path of the configuration file 
 	* Required: no  
-	* default value: `/home/jovyan/materials/utils/config.yaml`
+	* default value: `/home/jovyan//utils/config.yaml`
 
 ### `create_kafka_topic`
 
-**Signature**: `create_kafka_topic(topic,cf_path = "/home/jovyan/materials/utils/config.yaml",partitions=4,replication=3)`
+**Signature**: `create_kafka_topic(topic,cf_path,partitions=4,replication=3)`
 
 **Description**: Create a new kafka topic on a kafka broker. The information related to kafka is stored in the config file.
 
@@ -63,7 +63,7 @@ Python utils for educational project
 	* default value: `False`
 * `cf_path` - `String`: absolute path of the configuration file 
 	* Required: no  
-	* default value: `/home/jovyan/materials/utils/config.yaml`
+	* default value: `/home/jovyan/utils/config.yaml`
 * `partitions` - `Integer`: number of partitions of the new topic
 	* Required: no  
 	* default value: 3
