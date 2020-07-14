@@ -54,14 +54,13 @@ def kafka_srv_description(cf_path = "/home/jovyan/utils/config.yaml"):
         ksrv = read_config_value(key="{}.server".format(kconf_bkey), cf_path=cf_path)
         ksrvp = str(read_config_value(key="{}.port".format(kconf_bkey), cf_path=cf_path))
 
-        z = read_config_value(key="{}.zookeper.server".format(kconf_bkey), cf_path=cf_path)
-        zp = str(read_config_value(key="{}.zookeper.port".format(kconf_bkey), cf_path=cf_path))
+        z = read_config_value(key="{}.zookeper".format(kconf_bkey), cf_path=cf_path)
 
         sr_temp=read_config_value("{}.schema_registry.url".format(kconf_bkey), cf_path=cf_path).split(':')
         sr=sr_temp[0]+':'+sr_temp[1]
         srp=sr_temp[2]
 
-        l = [["Kafka", ksrv, ksrvp], ["Zookeeper", z, zp], ["Schema Registry", sr, srp]]
+        l = [["Kafka", ksrv, ksrvp], ["Zookeeper", z, "-"], ["Schema Registry", sr, srp]]
         table = tabulate(l, headers=['Service', 'Address', 'Port'], tablefmt='pretty')
         print(table)
     except:
