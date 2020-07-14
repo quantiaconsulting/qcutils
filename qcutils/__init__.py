@@ -8,7 +8,7 @@ from tabulate import tabulate
 
 #Generic utils
 
-def read_config_value(key,cf_path = "/home/jovyan/materials/utils/config.yaml"):
+def read_config_value(key,cf_path = "/home/jovyan/utils/config.yaml"):
     with open(cf_path, 'r') as ymlfile:
         cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
     
@@ -24,7 +24,7 @@ def read_config_value(key,cf_path = "/home/jovyan/materials/utils/config.yaml"):
 
 # Spark utils
 
-def init_spark_session(spark_session, cf_path = "/home/jovyan/materials/utils/config.yaml"):
+def init_spark_session(spark_session, cf_path = "/home/jovyan/utils/config.yaml"):
 
     with open(cf_path, 'r') as ymlfile:
         cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
@@ -46,7 +46,7 @@ def init_spark_session(spark_session, cf_path = "/home/jovyan/materials/utils/co
 
 # Kafka utils
 
-def kafka_srv_description(cf_path = "/home/jovyan/materials/utils/config.yaml"):
+def kafka_srv_description(cf_path = "/home/jovyan/utils/config.yaml"):
 
     try:
         kconf_bkey = 'kafka'
@@ -67,7 +67,7 @@ def kafka_srv_description(cf_path = "/home/jovyan/materials/utils/config.yaml"):
     except:
         print("No kafka service available")
 
-def create_kafka_topic(topic, security=False, cf_path = "/home/jovyan/materials/utils/config.yaml", partitions=1,replication=1):
+def create_kafka_topic(topic, security=False, cf_path = "/home/jovyan/utils/config.yaml", partitions=1,replication=1):
 
     kconf_bkey = 'kafka'
     servers=read_config_value(key="{}.server".format(kconf_bkey), cf_path=cf_path) + ":" + str(read_config_value(key="{}.port".format(kconf_bkey), cf_path=cf_path))
