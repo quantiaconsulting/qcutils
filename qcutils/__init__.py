@@ -28,11 +28,10 @@ def read_config_value(key,cf_path = "/home/jovyan/utils/config.yaml"):
 def init_spark_shell(java_sdk_vrs, hadoop_aws_vrs):
     os.environ['PYSPARK_SUBMIT_ARGS'] = (
         '--packages com.amazonaws:aws-java-sdk:{},org.apache.hadoop:hadoop-aws:{} pyspark-shell'
-        .format(
-            read_config_value("system.java_sdk.version"), 
-            read_config_value("system.hadoop_aws.version"))
-        )
+        .format(java_sdk_vrs, hadoop_aws_vrs))
     display(Markdown("**PySpark-Shell Up and Running**"))
+   
+    return
 
 def init_spark_session(spark_session, cf_path = "/home/jovyan/utils/config.yaml"):
 
