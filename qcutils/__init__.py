@@ -6,6 +6,7 @@ import io
 import s3fs
 from tabulate import tabulate
 from IPython.display import Markdown, display
+import os
 
 #Generic utils
 
