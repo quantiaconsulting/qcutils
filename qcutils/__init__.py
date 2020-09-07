@@ -5,6 +5,7 @@ import boto3
 import io
 import s3fs
 from tabulate import tabulate
+from IPython.display import Markdown, display
 
 #Generic utils
 
@@ -23,6 +24,15 @@ def read_config_value(key,cf_path = "/home/jovyan/utils/config.yaml"):
     return value
 
 # Spark utils
+
+def init_spark_shell(java_sdk_vrs, hadoop_aws_vrs):
+    os.environ['PYSPARK_SUBMIT_ARGS'] = (
+        '--packages com.amazonaws:aws-java-sdk:{},org.apache.hadoop:hadoop-aws:{} pyspark-shell'
+        .format(
+            qcutils.read_config_value("system.java_sdk.version"), 
+            qcutils.read_config_value("system.hadoop_aws.version"))
+        )
+    display(Markdown("**PySpark-Shell Up and Running**"))
 
 def init_spark_session(spark_session, cf_path = "/home/jovyan/utils/config.yaml"):
 
