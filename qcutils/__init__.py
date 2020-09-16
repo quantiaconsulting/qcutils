@@ -1,10 +1,7 @@
 import yaml
-from confluent_kafka.admin import AdminClient, NewTopic
-from confluent_kafka import KafkaError
 import boto3
 import io
 import s3fs
-from tabulate import tabulate
 from IPython.display import Markdown, display
 import os
 
@@ -58,6 +55,10 @@ def init_spark_session(spark_session, cf_path = "/home/jovyan/utils/config.yaml"
 
 def kafka_srv_description(cf_path = "/home/jovyan/utils/config.yaml"):
 
+    from tabulate import tabulate
+    from confluent_kafka.admin import AdminClient, NewTopic
+    from confluent_kafka import KafkaError
+
     try:
         kconf_bkey = 'kafka'
 
@@ -78,6 +79,8 @@ def kafka_srv_description(cf_path = "/home/jovyan/utils/config.yaml"):
 
 def create_kafka_topic(topic, security=False, cf_path = "/home/jovyan/utils/config.yaml", partitions=1,replication=1):
 
+    from confluent_kafka.admin import AdminClient, NewTopic
+    from confluent_kafka import KafkaError
     kconf_bkey = 'kafka'
     servers=read_config_value(key="{}.server".format(kconf_bkey), cf_path=cf_path) + ":" + str(read_config_value(key="{}.port".format(kconf_bkey), cf_path=cf_path))
     

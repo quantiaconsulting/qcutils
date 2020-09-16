@@ -21,12 +21,24 @@ Python utils for educational project
 	* Required: no  
 	* default value: `/home/jovyan/utils/config.yaml`
 
+### init_spark_shell
+
+**Signature**: `init_spark_shell(java_sdk_vrs, hadoop_aws_vrs)`
+
+**Description**: Initialize the pyspark shell at startup in order to import libs to interact with S3 using the s3a filesystem
+
+**Args**:
+
+* `java_sdk_vrs`  - `String`: the version of `aws-java-sdk` from `com.amazonaws` repository
+	* Required: yes 
+* `hadoop_aws_vrs` - `String`: the version of `hadoop-aws` from `org.apache.hadoop` repository
+	* Required: yes  
 
 ### `init_spark_session`
 
 **Signature**: `init_spark_session(spark_session, cf_path)`
 
-**Description**: Initialize an already existing SparkSession with the information to read from S3 unsing the s3a filesystem
+**Description**: Initialize an already existing SparkSession with the information to read from S3 using the s3a filesystem
 
 **Args**:
 
