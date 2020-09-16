@@ -10,7 +10,7 @@ import config_with_yaml as config
 
 def read_config_value(key,cf_path = "/home/jovyan/utils/config.yaml"):
     cfg = config.load(cf_path)
-    return cfg.getProperty(key))
+    return cfg.getProperty(key)
 
 # Spark utils
 
