@@ -4,22 +4,13 @@ import io
 import s3fs
 from IPython.display import Markdown, display
 import os
+import config_with_yaml as config
 
 #Generic utils
 
 def read_config_value(key,cf_path = "/home/jovyan/utils/config.yaml"):
-    with open(cf_path, 'r') as ymlfile:
-        cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
-    
-    if key.find(".") >= 0:
-        keys = key.split(".")
-        value = cfg
-        for str in keys:
-            value = value[str]         
-    else:
-        value = cfg[str]
-
-    return value
+    cfg = config.load(cf_path)
+    return cfg.getProperty(key))
 
 # Spark utils
 
