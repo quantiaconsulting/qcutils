@@ -4,32 +4,40 @@ import io
 import s3fs
 from IPython.display import Markdown, display
 import os
-import config_with_yaml as config
 
 #Generic utils
-
 def read_config_value(key,cf_path = "/home/jovyan/utils/config.yaml"):
-    cfg = config.load(cf_path)
-    return cfg.getProperty(key)
+
+    with open(cf_path) as ymlfile:
+        cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
+    pnames = key.split(".")
+
+    return search_sub_node(cfg, pnames)
+
+def search_sub_node(node, lst):
+
+    pname = lst.pop(0)
+    subnode = node[pname]
+    if (len(lst) > 0):
+        return (search_sub_node(subnode, lst))
+    else:
+        return subnode
 
 # Spark utils
 
-def init_spark_shell(java_sdk_vrs, hadoop_aws_vrs):
+def init_spark_shell(hadoop_vrs):
     os.environ['PYSPARK_SUBMIT_ARGS'] = (
-        '--packages com.amazonaws:aws-java-sdk:{},org.apache.hadoop:hadoop-aws:{} pyspark-shell'
-        .format(java_sdk_vrs, hadoop_aws_vrs))
+        '--packages "org.apache.hadoop:hadoop-aws:{}" pyspark-shell'
+        .format(hadoop_vrs))
     display(Markdown("**PySpark-Shell Up and Running**"))
    
     return
 
 def init_spark_session(spark_session, cf_path = "/home/jovyan/utils/config.yaml"):
-
-    with open(cf_path, 'r') as ymlfile:
-        cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
     
-    #Read the AWS key and secret from cofiguration file
-    aws_key = cfg['aws']['access']['key']
-    aws_secret = cfg['aws']['access']['secret']
+    aws_key = read_config_value("aws.access.key")
+    aws_secret = read_config_value("aws.access.secret")
+    aws_key = read_config_value("aws.access.key")
     
     #Set-up the hadoop configuration to enable s3a filesystem
     hadoop_conf = spark_session.sparkContext._jsc.hadoopConfiguration()

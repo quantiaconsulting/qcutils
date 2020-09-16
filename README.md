@@ -23,16 +23,16 @@ Python utils for educational project
 
 ### init_spark_shell
 
-**Signature**: `init_spark_shell(java_sdk_vrs, hadoop_aws_vrs)`
+**Signature**: `init_spark_shell(hadoop_vrs)`
 
 **Description**: Initialize the pyspark shell at startup in order to import libs to interact with S3 using the s3a filesystem
 
 **Args**:
 
-* `java_sdk_vrs`  - `String`: the version of `aws-java-sdk` from `com.amazonaws` repository
-	* Required: yes 
-* `hadoop_aws_vrs` - `String`: the version of `hadoop-aws` from `org.apache.hadoop` repository
+* `hadoop_vrs` - `String`: the version of `hadoop` libs on the system
 	* Required: yes  
+  
+**Note**: to check the hadoop version run `ls /usr/local/<spark-release>/jars` and look for hadoop libs
 
 ### `init_spark_session`
 
