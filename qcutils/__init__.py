@@ -25,14 +25,6 @@ def search_sub_node(node, lst):
 
 # Spark utils
 
-def init_spark_shell(hadoop_vrs):
-    os.environ['PYSPARK_SUBMIT_ARGS'] = (
-        '--packages "org.apache.hadoop:hadoop-aws:{}" pyspark-shell'
-        .format(hadoop_vrs))
-    display(Markdown("**PySpark-Shell Up and Running**"))
-   
-    return
-
 def init_spark_session(spark_session, cf_path = "/home/jovyan/utils/config.yaml"):
     
     aws_key = read_config_value("aws.access.key")
