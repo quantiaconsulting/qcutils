@@ -21,7 +21,7 @@ def __make_tarfile(source_dir, output_path):
         output_filename=path.split("/")[-1]
         with tarfile.open(output_filename, "w:gz") as tar:
             tar.add(source_dir, arcname=output_path)
-    else
+    else:
         print("The output_path must contains the name of the output .tar.gz archive")
 
 def __upload_file_s3(file_name, bucket, object_name=None):
