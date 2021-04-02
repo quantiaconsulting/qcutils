@@ -80,7 +80,6 @@ def compress_folder(path="/home/jovyan/materials"):
         Absolute path of the folder to compress  (default is/home/jovyan/materials)
     """
     try:
-        path="/home/jovyan/materials/data-track/bootcamp"
         print("Compressing {} folder....".format(path.split("/")[-1]))
         jhub_user=os.environ['JUPYTERHUB_USER']
         output_filename=path.split("/")[-1]+"_"+jhub_user.replace(".", "_")+".tar.gz"
