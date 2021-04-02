@@ -1,8 +1,13 @@
 import yaml
+import logging
+from botocore.exceptions import ClientError
 import boto3
 import io
 import s3fs
 from IPython.display import Markdown, display
+import os
+import traceback
+import tarfile
 import os
 
 ##Private functions
@@ -16,18 +21,21 @@ def __search_sub_node(node, lst):
         return subnode
 
 def __make_tarfile(source_dir, output_path):
-    import tarfile
-    if output_path.endswith('.tar.gz'):
-        output_filename=path.split("/")[-1]
-        with tarfile.open(output_filename, "w:gz") as tar:
-            tar.add(source_dir, arcname=output_path)
-    else:
-        print("The output_path must contains the name of the output .tar.gz archive")
+    try:
+        if output_path.endswith('.tar.gz'):
+            output_filename=output_path.split("/")[-1]
+            with tarfile.open(output_path, "w:gz") as tar:
+                tar.add(source_dir, arcname=output_filename)
+            print("OK")
+            return True
+        else:
+            print("The output_path must contains the name of the output .tar.gz archive")
+            return False
+    except:
+        traceback.print_exc()
+        return False
 
 def __upload_file_s3(file_name, bucket, object_name=None):
-    import logging
-    import boto3
-    from botocore.exceptions import ClientError
     # If S3 object_name was not specified, use file_name
     if object_name is None:
         object_name = file_name
@@ -72,13 +80,16 @@ def compress_folder(path="/home/jovyan/materials"):
         Absolute path of the folder to compress  (default is/home/jovyan/materials)
     """
     try:
+        path="/home/jovyan/materials/data-track/bootcamp"
         print("Compressing {} folder....".format(path.split("/")[-1]))
         jhub_user=os.environ['JUPYTERHUB_USER']
         output_filename=path.split("/")[-1]+"_"+jhub_user.replace(".", "_")+".tar.gz"
-        __make_tarfile(path, "/home/jovyan/"+output_filename)
-        print("You can find your notebooks compressed in your home folder")
+        if(__make_tarfile(path, "/home/jovyan/"+output_filename)):
+            print("You can find your {} in your home folder".format(output_filename))
+        else:
+            raise Exception
     except:
-        print("An exception occurred while compressing Folder")  
+        traceback.print_exc()  
 
 def update_materials():
     """Update the folder /home/jovyan/materials with the new content from github repository the classes (this command try to perform a git merges)
