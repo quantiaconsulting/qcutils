@@ -9,6 +9,9 @@ import os
 import traceback
 import tarfile
 import os
+import shutil
+import tarfile
+
 
 ##Private functions
 def __search_sub_node(node, lst):
@@ -44,6 +47,20 @@ def __upload_file_s3(file_name, bucket, object_name=None):
     s3_client = boto3.client('s3')
     try:
         response = s3_client.upload_file(file_name, bucket, object_name)
+    except ClientError as e:
+        logging.error(e)
+        return False
+    return True
+
+def __download_file_s3(file_name, bucket, object_name=None):
+    # If S3 object_name was not specified, use file_name
+    if object_name is None:
+        object_name = file_name
+
+    # Download the file
+    s3_client = boto3.client('s3')
+    try:
+        response = s3_client.download_file(bucket, object_name, file_name)
     except ClientError as e:
         logging.error(e)
         return False
@@ -104,7 +121,53 @@ def deliver_bootcamp(path="/home/jovyan/materials/bootcamp"):
     path: str, optional
         Absolute path of the folder to compress and push (default is /home/jovyan/materials/bootcamp)
     """
-    push_folder(path)
+    push_to_remote("quantia-bootcamp-results", path)
+
+def persist_user_materials(path="/home/jovyan/persistent-materials"):
+    """Compress the specified folder and push the resulting archive on the quantia-platform-users S3 bucket
+
+    Parameters
+    ----------
+    path: str, optional
+        Absolute path of the folder to compress and push (default is /home/jovyan/materials)
+    """
+    push_to_remote("quantia-platform-users", path)
+
+def restore_user_materials(bucket="quantia-platform-users", local_file_path="/home/jovyan/"):
+    """Pull the user folder from quantia-platform-users and uncompress it into persistent-materials folder
+
+    Parameters
+    ----------
+    path: str, optional
+        Absolute path of the folder to compress and push (default is /home/jovyan/materials)
+    """
+    #!/usr/bin/python
+    import os
+
+    # Remove persistent-materials original folder
+    folder_path = "/home/jovyan/persistent-materials"
+    if os.path.exists(folder_path):
+        shutil.rmtree(folder_path)
+    
+    tar_file=pull_from_remote(bucket, local_file_path)
+
+    my_tar = tarfile.open(tar_file)
+    for member in my_tar.getmembers():
+        if (".ipynb_checkpoints" not in member.name):
+            my_tar.extract(member, path="/home/jovyan/tmp")  
+    my_tar.close()
+
+    os.mkdir("/home/jovyan/persistent-materials")
+    source_dir = "/home/jovyan/tmp/"+tar_file.split("/")[3]
+    target_dir = '/home/jovyan/persistent-materials'
+        
+    file_names = os.listdir(source_dir)
+        
+    for file_name in file_names:
+        shutil.move(os.path.join(source_dir, file_name), target_dir)
+
+    os.remove(tar_file)
+    shutil.rmtree("/home/jovyan/tmp/")
 
 # Spark utils
 def init_spark_session(spark_session, cf_path = "/home/jovyan/utils/config.yaml"):
@@ -223,23 +286,55 @@ def create_kafka_topic(topic, security=False, cf_path = "/home/jovyan/utils/conf
 
 # S3 utils
 
-def push_folder(path="/home/jovyan/materials"):
+def push_to_remote(bucket, path="/home/jovyan/materials"):
     """Compress the specified folder and push the resulting archive on the quantia-bootcamp-results S3 bucket
 
     Parameters
     ----------
     path: str, optional
         Absolute path of the folder to compress and push (default is /home/jovyan/materials)
+    bucket: str
+        Name of the bucket to be used as destination
     """
     compress_folder(path)
     print("Sending compressed {} to qc repo....".format(path.split("/")[-1]))
     ghb=os.environ['GITHUB_BRANCH']
     jhub_user=os.environ['JUPYTERHUB_USER']
     file_name=path.split("/")[-1]+"_"+jhub_user.replace(".", "_")+".tar.gz"
-    res=__upload_file_s3("/home/jovyan/"+file_name, "quantia-bootcamp-results", ghb+"/"+file_name)
+    res=__upload_file_s3("/home/jovyan/"+file_name, bucket, ghb+"/"+file_name)
     if res:
         print("{} is now on qc remote repo -> {}".format(path.split("/")[-1], ghb+"/"+file_name))
         
+def pull_from_remote(bucket, local_file_path):
+    """Pull the user folder from the specified bucket
+
+    Parameters
+    ----------
+    bucket: str
+        Name of the bucket to be used as destination
+    local_file_path (str): 
+        Local path for downloading the file
+    """
+
+    if not local_file_path.endswith("/"):
+        local_file_path = local_file_path+"/"
+
+    ghb=os.environ['GITHUB_BRANCH']
+    jhub_user=os.environ['JUPYTERHUB_USER']
+    file_name=jhub_user.replace(".", "_")+".tar.gz"
+    print(file_name + ","+ bucket + ","+  ghb+"/*"+file_name)
+
+    s3_rs = boto3.resource('s3')
+    s3_client = boto3.client('s3')
+
+    bucket_obj = s3_rs.Bucket(bucket)
+
+    objects = bucket_obj.objects.filter(Prefix=ghb+"/")
+
+    for object in objects:
+        if object.key.endswith(file_name):
+            s3_client.download_file(bucket, object.key, local_file_path + object.key.split("/")[1])
+            return local_file_path + object.key.split("/")[1]
 
 def list_s3_bucket_objects(bucket_name='quantia-master', prefix='training', limit=10):
     """List objects in a S3 bucket and folder
