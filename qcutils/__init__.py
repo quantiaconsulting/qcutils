@@ -65,7 +65,7 @@ def __download_file_s3(file_name, bucket, object_name=None):
     return True
 
 #Generic utils
-def read_config_value(key,github_user="qc-admin",github_token="***REMOVED***", cf_path = "/home/jovyan/utils/config.yaml"):
+def read_config_value(key, github_user="qc-admin", github_token="***REMOVED***", remote_cf_version = "0.1", cf_path = "/home/jovyan/utils/config.yaml"):
     """Read, from a yaml-style config file, the value related to the key
 
     Args:
@@ -75,17 +75,19 @@ def read_config_value(key,github_user="qc-admin",github_token="***REMOVED***", c
         The Github User to access the config file on the private quantia repository. Defaults to "qc-admin".
         github_token str, optional: 
         The Github Token to access the config file on the private quantia repository. Defaults to "***REMOVED***".
+        remote_cf_version str, optional: 
+        Version of the remote config file to download. Defaults to "0.1".
         cf_path: str, optional
         Absolute path of the configuration file. Default to "/home/jovyan/utils/config.yaml"
     """    
 
     if not os.path.exists(cf_path):
         if os.environ['MODE'] == "local":
-            url = 'https://qc-admin:***REMOVED***@raw.githubusercontent.com/quantiaconsulting/qc-edu-platform-dp/master/utils/config_files/hare-config-local-0.6.yaml'
+            url = 'https://{}:{}@raw.githubusercontent.com/quantiaconsulting/qc-edu-platform-dp/master/utils/config_files/hare-config-local-{}.yaml'.format(github_user, github_token, remote_cf_version)
             r = requests.get(url, allow_redirects=True)
             open(cf_path, 'wb').write(r.content)
         else:
-            url = 'https://qc-admin:***REMOVED***@raw.githubusercontent.com/quantiaconsulting/qc-edu-platform-dp/master/utils/config_files/hare-config-remote-0.6.yaml'
+            url = 'https://{}:{}@raw.githubusercontent.com/quantiaconsulting/qc-edu-platform-dp/master/utils/config_files/hare-config-remote-{}.yaml'.format(github_user, github_token, remote_cf_version)
             r = requests.get(url, allow_redirects=True)
             open(cf_path, 'wb').write(r.content)
     
