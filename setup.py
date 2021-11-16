@@ -1,7 +1,7 @@
 import setuptools
 
 setuptools.setup(name='qcutils',
-      version='0.5',
+      version='0.6',
       description='Utilities for python educational project',
       author='Marco Balduini',
       author_email='marco.balduini@quantiaconsulting.com',

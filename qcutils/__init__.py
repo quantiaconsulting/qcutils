@@ -11,7 +11,7 @@ import tarfile
 import os
 import shutil
 import tarfile
-
+import configparser
 
 ##Private functions
 def __search_sub_node(node, lst):
@@ -181,9 +181,12 @@ def init_spark_session(spark_session, cf_path = "/home/jovyan/utils/config.yaml"
         Absolute path of the configuration file  (default is /home/jovyan/utils/config.yaml)
     """
     
-    aws_key = read_config_value("aws.access.key")
-    aws_secret = read_config_value("aws.access.secret")
-    aws_key = read_config_value("aws.access.key")
+    config = configparser.RawConfigParser()
+    path = os.path.expanduser('~/.aws/credentials')
+    config.read(path)
+
+    aws_key=config['default']["aws_access_key_id"]
+    aws_secret=config['default']["aws_secret_access_key"]
     
     #Set-up the hadoop configuration to enable s3a filesystem
     hadoop_conf = spark_session.sparkContext._jsc.hadoopConfiguration()
