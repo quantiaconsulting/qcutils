@@ -1,14 +1,12 @@
 import yaml
+import requests
 import logging
 from botocore.exceptions import ClientError
 import boto3
-import io
-import s3fs
 from IPython.display import Markdown, display
 import os
 import traceback
 import tarfile
-import os
 import shutil
 import tarfile
 import configparser
@@ -67,21 +65,30 @@ def __download_file_s3(file_name, bucket, object_name=None):
     return True
 
 #Generic utils
-def read_config_value(key,cf_path = "/home/jovyan/utils/config.yaml"):
+def read_config_value(key,github_user="qc-admin",github_token="***REMOVED***", cf_path = "/home/jovyan/utils/config.yaml"):
     """Read, from a yaml-style config file, the value related to the key
 
-    Parameters
-    ----------
-    key: str
+    Args:
+        key: str
         The key corresponding to the configuration value to extract
-    cf_path: str, optional
-        Absolute path of the configuration file  (default is /home/jovyan/utils/config.yaml)
-	Returns
-    -------
-    object
-        The value corresponding to the key
-    """
+        github_user: str, optional: 
+        The Github User to access the config file on the private quantia repository. Defaults to "qc-admin".
+        github_token str, optional: 
+        The Github Token to access the config file on the private quantia repository. Defaults to "***REMOVED***".
+        cf_path: str, optional
+        Absolute path of the configuration file. Default to "/home/jovyan/utils/config.yaml"
+    """    
 
+    if not os.path.exists(cf_path):
+        if os.environ['MODE'] == "local":
+            url = 'https://qc-admin:***REMOVED***@raw.githubusercontent.com/quantiaconsulting/qc-edu-platform-dp/master/utils/config_files/hare-config-local-0.6.yaml'
+            r = requests.get(url, allow_redirects=True)
+            open(cf_path, 'wb').write(r.content)
+        else:
+            url = 'https://qc-admin:***REMOVED***@raw.githubusercontent.com/quantiaconsulting/qc-edu-platform-dp/master/utils/config_files/hare-config-remote-0.6.yaml'
+            r = requests.get(url, allow_redirects=True)
+            open(cf_path, 'wb').write(r.content)
+    
     with open(cf_path) as ymlfile:
         cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
     pnames = key.split(".")
