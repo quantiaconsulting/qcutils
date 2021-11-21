@@ -185,6 +185,32 @@ def restore_user_materials(bucket="quantia-platform-users", local_file_path="/ho
     os.remove(tar_file)
     shutil.rmtree("/home/jovyan/tmp/")
 
+def restore_user_bootcamp(bucket="quantia-bootcamp-results", local_file_path="/home/jovyan/"):
+    # Remove persistent-materials original folder
+    folder_path = "/home/jovyan/materials/bootcamp"
+    if os.path.exists(folder_path):
+        shutil.rmtree(folder_path)
+    
+    tar_file=pull_from_remote(bucket, local_file_path)
+    print(tar_file)
+    my_tar = tarfile.open(tar_file)
+    for member in my_tar.getmembers():
+        if (".ipynb_checkpoints" not in member.name):
+            my_tar.extract(member, path="/home/jovyan/tmp")  
+    my_tar.close()
+
+    os.mkdir("/home/jovyan/materials/bootcamp")
+    source_dir = "/home/jovyan/tmp/"+tar_file.split("/")[-1]
+    target_dir = '/home/jovyan/materials/bootcamp'
+        
+    file_names = os.listdir(source_dir)
+        
+    for file_name in file_names:
+        shutil.move(os.path.join(source_dir, file_name), target_dir)
+
+    os.remove(tar_file)
+    shutil.rmtree("/home/jovyan/tmp/")
+
 # Spark utils
 def init_spark_session(spark_session):
     """Initialize an already existing SparkSession with the information to read from S3 using the s3a filesystem
