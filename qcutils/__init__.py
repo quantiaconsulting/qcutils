@@ -139,7 +139,7 @@ def deliver_bootcamp(path="/home/jovyan/materials/bootcamp"):
     """
     push_to_remote("quantia-bootcamp-results", path)
 
-def persist_user_materials(path="/home/jovyan/persistent-materials"):
+def persist_user_materials(path="/home/jovyan/materials"):
     """Compress the specified folder and push the resulting archive on the quantia-platform-users S3 bucket
 
     Parameters
@@ -154,9 +154,20 @@ def restore_user_materials(bucket="quantia-platform-users", local_file_path="/ho
 
     Parameters
     ----------
+        bucket (str, optional): Bucket containing persisted data. Defaults to "quantia-platform-users".
+        local_file_path (str, optional): Base-path to be used to restore persisted materials. Defaults to "/home/jovyan/".
+    """    
+    
+    
+    
+    """Pull the user folder from quantia-platform-users and uncompress it into persistent-materials folder
+
+    Parameters
+    ----------
     path: str, optional
         Absolute path of the folder to compress and push (default is /home/jovyan/materials)
     """
+
     #!/usr/bin/python
     import os
 
