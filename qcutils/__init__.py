@@ -65,16 +65,16 @@ def __download_file_s3(file_name, bucket, object_name=None):
     return True
 
 #Generic utils
-def read_config_value(key, github_user, github_token, remote_cf_version = "0.6.0", cf_path = "/home/jovyan/utils/config.yaml"):
+def read_config_value(key, github_user="", github_token="", remote_cf_version = "0.6.0", cf_path = "/home/jovyan/utils/config.yaml"):
     """Read, from a yaml-style config file, the value related to the key
 
     Args:
         key: str
         The key corresponding to the configuration value to extract
-        github_user: str: 
-        The Github User to access the config file on the private quantia repository.
-        github_token str: 
-        The Github Token to access the config file on the private quantia repository.
+        github_user: str, optional: 
+        The Github User to access the config file on the private quantia repository. Defaults to "".
+        github_token str, optional: 
+        The Github Token to access the config file on the private quantia repository. Defaults to "".
         remote_cf_version str, optional: 
         Version of the remote config file to download. Defaults to "0.6.0".
         cf_path: str, optional
@@ -82,10 +82,10 @@ def read_config_value(key, github_user, github_token, remote_cf_version = "0.6.0
     """    
 
     if not os.path.exists(cf_path):
-        print("Getting local config files from remote")
-        if os.environ['GITHUB_USER'] != "":
+        print("Getting config files from remote")
+        if github_user == "":
             github_user=os.environ['GITHUB_USER']
-        if os.environ['GITHUB_TOKEN'] != "":
+        if github_token == "":
             github_token=os.environ['GITHUB_TOKEN']
         if os.environ['MODE'] == "local":
             with open(cf_path, 'wb') as config_file:
