@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qcutils"
+version = "0.7.0"
+description = "Utilities per i progetti educational di Quantia Consulting"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Marco Balduini", email = "marco.balduini@quantiaconsulting.com" }]
+requires-python = ">=3.9"
+dependencies = [
+    "boto3",
+    "pyyaml",
+    "tabulate",
+]
+
+[project.optional-dependencies]
+# Le helper Kafka importano confluent-kafka in modo lazy: installalo solo se servono.
+kafka = ["confluent-kafka>=2.0"]
+
+[project.urls]
+Homepage = "https://github.com/quantiaconsulting/qcutils"
+
+[tool.setuptools]
+packages = ["qcutils"]
