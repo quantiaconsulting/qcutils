@@ -4,21 +4,34 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qcutils"
-version = "0.7.0"
+version = "1.0.0"
 description = "Utilities per i progetti educational di Quantia Consulting"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Marco Balduini", email = "marco.balduini@quantiaconsulting.com" }]
-requires-python = ">=3.9"
-dependencies = [
-    "boto3",
-    "pyyaml",
-    "tabulate",
+requires-python = ">=3.10"
+# Core minimale: le dipendenze pesanti sono extra (importate in modo lazy).
+dependencies = []
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Education",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
 [project.optional-dependencies]
-# Le helper Kafka importano confluent-kafka in modo lazy: installalo solo se servono.
+config = ["pyyaml"]
+viz = ["tabulate"]
+s3 = ["boto3"]
 kafka = ["confluent-kafka>=2.0"]
+# Tutto tranne kafka (che richiede build nativi): utile per i notebook standard.
+all = ["pyyaml", "tabulate", "boto3"]
+test = ["pytest", "pyyaml"]
 
 [project.urls]
 Homepage = "https://github.com/quantiaconsulting/qcutils"

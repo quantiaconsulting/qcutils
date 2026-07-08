@@ -15,12 +15,66 @@ qcutils.create_kafka_topic("demo")
 qcutils.deliver_bootcamp()
 ```
 
-`init()` legge, con precedenza `argomenti > env var > default self-contained`:
+`init()` accetta solo argomenti keyword-only e legge, con precedenza
+`argomenti > env var > default self-contained`:
 `KAFKA_BOOTSTRAP_SERVERS` (default `localhost:9092`), `SCHEMA_REGISTRY_URL`,
 `FLINK_REST_URL`, `KAFKA_SASL_USERNAME/PASSWORD`, `AWS_ACCESS_KEY_ID/SECRET`,
 `AWS_DEFAULT_REGION`, `JUPYTERHUB_USER`, `GITHUB_BRANCH`, `GITHUB_REPO`.
 
+`init()` ritorna un oggetto `Config` immutabile; `qcutils.get_config()` ritorna
+lo stesso singleton. I segreti (password SASL, chiavi AWS) sono esclusi dal
+`repr` di `Config`.
+
 Sul laptop: `qcutils.init(interactive=True)` chiede i segreti AWS con prompt sicuro.
+
+### Config esplicita (funzioni pure)
+
+Le helper accettano un parametro keyword-only `config: Config | None = None`.
+Se omesso usano il singleton popolato da `init()` (comportamento storico),
+altrimenti la Config passata:
+
+```python
+cfg = qcutils.Config.from_env(kafka_bootstrap="broker:9092")
+print(qcutils.kafka_srv_description(config=cfg))
+```
+
+## Credenziali AWS
+
+Di default `init()` **non** scrive `~/.aws/credentials`: boto3 e Spark leggono
+le credenziali dall'ambiente / default credential chain. Per il comportamento
+storico (scrittura del file) usa `qcutils.init(write_aws=True)`.
+
+## Installazione ed extra
+
+Il core è senza dipendenze; le librerie pesanti sono extra e vengono importate
+in modo *lazy* (così `import qcutils` e `init()` funzionano anche senza extra):
+
+```bash
+pip install qcutils            # core
+pip install "qcutils[all]"     # pyyaml + tabulate + boto3
+pip install "qcutils[s3]"      # boto3
+pip install "qcutils[viz]"     # tabulate (tabella endpoint)
+pip install "qcutils[config]"  # pyyaml (read_config_value)
+pip install "qcutils[kafka]"   # confluent-kafka (create_kafka_topic)
+```
+
+## Retrocompatibilità
+
+Questa release (1.0.0) preserva l'intera API pubblica storica: le firme delle
+funzioni chiamate dai notebook restano identiche, incluse
+`read_config_value(key, github_user, github_token, remote_cf_version, cf_path)`
+(i primi tre parametri sono conservati per compatibilità ma ignorati).
+`kafka_srv_description()` ora **ritorna** la stringa della tabella (i notebook
+la usano con `print(...)`). Le funzioni non più utilizzate
+(`read_config_value`, `restore_user_bootcamp`, `list_s3_bucket_objects`,
+`print_s3_bucket_object`) restano funzionanti ma emettono `DeprecationWarning`.
+
+## Sviluppo & test
+
+```bash
+pip install -e ".[test]"
+pytest
+```
 
 ## Build & pubblicazione
 

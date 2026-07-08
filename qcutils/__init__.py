@@ -13,49 +13,152 @@ I segreti NON sono mai nel pacchetto né vanno scritti nei notebook: arrivano a
 runtime (JupyterHub spawner env, `docker run -e ...`, oppure `init(interactive=True)`
 per il laptop). In assenza di credenziali/endpoint condivisi, qcutils resta
 utilizzabile sul sandbox locale (Kafka su localhost:9092, Spark locale).
+
+Retrocompatibilità
+------------------
+La API pubblica storica è preservata: le firme delle funzioni chiamate dai
+notebook restano identiche. Le funzioni probabilmente non più usate emettono un
+`DeprecationWarning` ma continuano a funzionare. Le dipendenze pesanti
+(boto3, tabulate, confluent-kafka) sono importate in modo *lazy*, così che
+`import qcutils` e `qcutils.init()` funzionino anche senza extra installati.
 """
-import os
-import logging
-import shutil
-import tarfile
-import getpass
-import traceback
+from __future__ import annotations
+
 import configparser
-from dataclasses import dataclass
+import functools
+import getpass
+import logging
+import os
+import shutil
+import subprocess
+import tarfile
+import warnings
+from dataclasses import dataclass, field
+from typing import Any, Callable, TypeVar
 
 logger = logging.getLogger("qcutils")
 
-__version__ = "0.7.0"
+__version__ = "1.0.0"
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+__all__ = [
+    "__version__",
+    "Config",
+    "init",
+    "get_config",
+    "read_config_value",
+    "kafka_srv_description",
+    "create_kafka_topic",
+    "init_spark_session",
+    "deliver_bootcamp",
+    "persist_user_materials",
+    "restore_user_materials",
+    "restore_user_bootcamp",
+    "update_materials",
+    "compress_folder",
+    "push_to_remote",
+    "pull_from_remote",
+    "list_s3_bucket_objects",
+    "print_s3_bucket_object",
+]
+
+
+# =============================================================================
+# Deprecation helper
+# =============================================================================
+
+def _deprecated(msg: str) -> Callable[[_F], _F]:
+    """Decorator riusabile: emette un ``DeprecationWarning`` all'invocazione."""
+
+    def decorator(func: _F) -> _F:
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            warnings.warn(msg, DeprecationWarning, stacklevel=2)
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
 
 # =============================================================================
 # Config & init
 # =============================================================================
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Config:
-    """Stato di runtime di qcutils. Niente segreti su disco se non necessario."""
+    """Stato di runtime di qcutils. Niente segreti su disco se non necessario.
+
+    Immutabile: usa :meth:`from_env` o :func:`init` per costruirla. I segreti
+    (password SASL, chiavi AWS) sono esclusi dal ``repr`` per evitarne il leak
+    accidentale nei log o nei notebook.
+    """
+
     kafka_bootstrap: str = "localhost:9092"
     schema_registry_url: str = ""
     flink_rest_url: str = ""
     kafka_sasl_username: str = ""
-    kafka_sasl_password: str = ""
+    kafka_sasl_password: str = field(default="", repr=False)
     jupyterhub_user: str = ""
     github_branch: str = ""
     github_repo: str = ""
     aws_region: str = ""
+    aws_access_key_id: str = field(default="", repr=False)
+    aws_secret_access_key: str = field(default="", repr=False)
     initialized: bool = False
 
+    @classmethod
+    def from_env(cls, **overrides: Any) -> "Config":
+        """Costruisce una Config con precedenza ``override > env > default``.
 
-_config = Config()
+        Gli ``overrides`` con valore *falsy* (``None`` o stringa vuota) sono
+        ignorati, così un override omesso ricade sull'env var e poi sul default.
+        """
+        g = os.environ.get
+
+        def pick(key: str, env: str, default: str = "") -> str:
+            ov = overrides.get(key)
+            if ov:
+                return ov
+            return g(env, default)
+
+        return cls(
+            kafka_bootstrap=pick("kafka_bootstrap", "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
+            schema_registry_url=pick("schema_registry_url", "SCHEMA_REGISTRY_URL"),
+            flink_rest_url=pick("flink_rest_url", "FLINK_REST_URL"),
+            kafka_sasl_username=pick("kafka_sasl_username", "KAFKA_SASL_USERNAME"),
+            kafka_sasl_password=pick("kafka_sasl_password", "KAFKA_SASL_PASSWORD"),
+            jupyterhub_user=g("JUPYTERHUB_USER", ""),
+            github_branch=g("GITHUB_BRANCH", ""),
+            github_repo=g("GITHUB_REPO", ""),
+            aws_region=pick("aws_region", "AWS_DEFAULT_REGION"),
+            aws_access_key_id=pick("aws_access_key_id", "AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=pick("aws_secret_access_key", "AWS_SECRET_ACCESS_KEY"),
+            initialized=True,
+        )
 
 
-def init(*, kafka_bootstrap=None, schema_registry_url=None, flink_rest_url=None,
-         kafka_sasl_username=None, kafka_sasl_password=None,
-         aws_access_key_id=None, aws_secret_access_key=None, aws_region=None,
-         interactive=False, write_aws=True):
+# Singleton interno per il façade retrocompatibile. Popolato da init().
+_config: Config = Config()
+
+
+def init(
+    *,
+    kafka_bootstrap: str | None = None,
+    schema_registry_url: str | None = None,
+    flink_rest_url: str | None = None,
+    kafka_sasl_username: str | None = None,
+    kafka_sasl_password: str | None = None,
+    aws_access_key_id: str | None = None,
+    aws_secret_access_key: str | None = None,
+    aws_region: str | None = None,
+    interactive: bool = False,
+    write_aws: bool = False,
+) -> Config:
     """Inizializza qcutils con endpoint e segreti, a runtime. Idempotente.
 
-    Args (tutti opzionali; se omessi si leggono dalle env var corrispondenti):
+    Args (tutti opzionali e keyword-only; se omessi si leggono dalle env var):
         kafka_bootstrap:        KAFKA_BOOTSTRAP_SERVERS (default localhost:9092)
         schema_registry_url:    SCHEMA_REGISTRY_URL
         flink_rest_url:         FLINK_REST_URL
@@ -65,119 +168,118 @@ def init(*, kafka_bootstrap=None, schema_registry_url=None, flink_rest_url=None,
         aws_secret_access_key:  AWS_SECRET_ACCESS_KEY
         aws_region:             AWS_DEFAULT_REGION
         interactive:    se True, chiede via prompt sicuro i segreti AWS mancanti
-        write_aws:      se True (default) scrive ~/.aws/credentials quando le
-                        chiavi sono fornite e il file non esiste già
+        write_aws:      se True scrive ~/.aws/credentials quando le chiavi sono
+                        fornite e il file non esiste. Default False: boto3 e
+                        Spark leggono le credenziali dall'ambiente.
     Ritorna l'oggetto Config. Non stampa mai i segreti.
     """
-    g = os.environ.get
-    _config.kafka_bootstrap = kafka_bootstrap or g("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-    _config.schema_registry_url = schema_registry_url or g("SCHEMA_REGISTRY_URL", "")
-    _config.flink_rest_url = flink_rest_url or g("FLINK_REST_URL", "")
-    _config.kafka_sasl_username = kafka_sasl_username or g("KAFKA_SASL_USERNAME", "")
-    _config.kafka_sasl_password = kafka_sasl_password or g("KAFKA_SASL_PASSWORD", "")
-    _config.jupyterhub_user = g("JUPYTERHUB_USER", "")
-    _config.github_branch = g("GITHUB_BRANCH", "")
-    _config.github_repo = g("GITHUB_REPO", "")
-    _config.aws_region = aws_region or g("AWS_DEFAULT_REGION", "")
+    global _config
 
-    ak = aws_access_key_id or g("AWS_ACCESS_KEY_ID", "")
-    sk = aws_secret_access_key or g("AWS_SECRET_ACCESS_KEY", "")
+    ak = aws_access_key_id or os.environ.get("AWS_ACCESS_KEY_ID", "")
+    sk = aws_secret_access_key or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
     if interactive:
         if not ak:
             ak = input("AWS_ACCESS_KEY_ID: ").strip()
         if not sk:
             sk = getpass.getpass("AWS_SECRET_ACCESS_KEY: ").strip()
+
+    _config = Config.from_env(
+        kafka_bootstrap=kafka_bootstrap,
+        schema_registry_url=schema_registry_url,
+        flink_rest_url=flink_rest_url,
+        kafka_sasl_username=kafka_sasl_username,
+        kafka_sasl_password=kafka_sasl_password,
+        aws_access_key_id=ak,
+        aws_secret_access_key=sk,
+        aws_region=aws_region,
+    )
+
     creds_path = os.path.expanduser("~/.aws/credentials")
     if write_aws and ak and sk and not os.path.exists(creds_path):
         _write_aws_credentials(ak, sk, _config.aws_region)
 
-    _config.initialized = True
-    logger.info("qcutils inizializzato (kafka=%s, sasl=%s, sr=%s)",
-                _config.kafka_bootstrap,
-                "yes" if _config.kafka_sasl_username else "no",
-                _config.schema_registry_url or "-")
+    logger.info(
+        "qcutils inizializzato (kafka=%s, sasl=%s, sr=%s)",
+        _config.kafka_bootstrap,
+        "yes" if _config.kafka_sasl_username else "no",
+        _config.schema_registry_url or "-",
+    )
     return _config
 
 
-def get_config():
-    """Ritorna l'oggetto Config corrente."""
+def get_config() -> Config:
+    """Ritorna l'oggetto Config corrente (il singleton popolato da ``init()``)."""
     return _config
 
 
-def _write_aws_credentials(key, secret, region=""):
+def _resolve_config(config: Config | None) -> Config:
+    """Ritorna la Config esplicita o il singleton interno come fallback."""
+    return config if config is not None else _config
+
+
+def _write_aws_credentials(key: str, secret: str, region: str = "") -> None:
     aws_dir = os.path.expanduser("~/.aws")
     os.makedirs(aws_dir, exist_ok=True)
-    with open(os.path.join(aws_dir, "credentials"), "w") as f:
-        f.write("[default]\naws_access_key_id={}\naws_secret_access_key={}\n".format(key, secret))
+    creds_file = os.path.join(aws_dir, "credentials")
+    with open(creds_file, "w") as f:
+        f.write(f"[default]\naws_access_key_id={key}\naws_secret_access_key={secret}\n")
     if region:
         with open(os.path.join(aws_dir, "config"), "w") as f:
-            f.write("[default]\nregion={}\n".format(region))
+            f.write(f"[default]\nregion={region}\n")
     os.chmod(aws_dir, 0o700)
-    os.chmod(os.path.join(aws_dir, "credentials"), 0o600)
+    os.chmod(creds_file, 0o600)
     logger.info("AWS credentials scritte in ~/.aws/credentials")
-
-
-def _resolve(value, cfg_attr, env_name):
-    """Risolve un valore: esplicito > Config (da init) > env var."""
-    if value:
-        return value
-    cfg_val = getattr(_config, cfg_attr, "")
-    if cfg_val:
-        return cfg_val
-    return os.environ.get(env_name, "")
 
 
 # =============================================================================
 # Funzioni private
 # =============================================================================
 
-def __search_sub_node(node, lst):
+def _search_sub_node(node: Any, lst: list[str]) -> Any:
     pname = lst.pop(0)
     subnode = node[pname]
     if len(lst) > 0:
-        return __search_sub_node(subnode, lst)
+        return _search_sub_node(subnode, lst)
     return subnode
 
 
-def __make_tarfile(source_dir, output_path):
-    try:
-        if output_path.endswith(".tar.gz"):
-            output_filename = output_path.split("/")[-1]
-            with tarfile.open(output_path, "w:gz") as tar:
-                tar.add(source_dir, arcname=output_filename)
-            print("OK")
-            return True
-        print("The output_path must contain the name of the output .tar.gz archive")
+def _make_tarfile(source_dir: str, output_path: str) -> bool:
+    if not output_path.endswith(".tar.gz"):
+        logger.error("output_path deve terminare con il nome dell'archivio .tar.gz")
         return False
-    except Exception:
-        traceback.print_exc()
-        return False
+    output_filename = output_path.rsplit("/", 1)[-1]
+    with tarfile.open(output_path, "w:gz") as tar:
+        tar.add(source_dir, arcname=output_filename)
+    logger.info("Archivio creato: %s", output_path)
+    return True
 
 
-def __upload_file_s3(file_name, bucket, object_name=None):
+def _upload_file_s3(file_name: str, bucket: str, object_name: str | None = None) -> bool:
     import boto3
     from botocore.exceptions import ClientError
+
     if object_name is None:
         object_name = file_name
     s3_client = boto3.client("s3")
     try:
         s3_client.upload_file(file_name, bucket, object_name)
     except ClientError as e:
-        logging.error(e)
+        logger.error("Upload S3 fallito: %s", e)
         return False
     return True
 
 
-def __download_file_s3(file_name, bucket, object_name=None):
+def _download_file_s3(file_name: str, bucket: str, object_name: str | None = None) -> bool:
     import boto3
     from botocore.exceptions import ClientError
+
     if object_name is None:
         object_name = file_name
     s3_client = boto3.client("s3")
     try:
         s3_client.download_file(bucket, object_name, file_name)
     except ClientError as e:
-        logging.error(e)
+        logger.error("Download S3 fallito: %s", e)
         return False
     return True
 
@@ -186,123 +288,155 @@ def __download_file_s3(file_name, bucket, object_name=None):
 # Config file (compat) — SOLO lettura di un file locale, niente token-in-URL
 # =============================================================================
 
-def read_config_value(key, github_user="", github_token="", remote_cf_version="0.6.0",
-                       cf_path="/home/jovyan/utils/config.yaml"):
+@_deprecated(
+    "read_config_value() è deprecata: usa qcutils.init() con le env var del "
+    "deployment. I parametri github_user/github_token/remote_cf_version sono "
+    "ignorati (legge solo il file YAML locale in cf_path)."
+)
+def read_config_value(
+    key: str,
+    github_user: str = "",
+    github_token: str = "",
+    remote_cf_version: str = "0.6.0",
+    cf_path: str = "/home/jovyan/utils/config.yaml",
+) -> Any:
     """[Compat] Legge un valore da un config YAML LOCALE.
 
     Il vecchio download da repo privato con token nell'URL è stato rimosso
-    (anti-pattern). Per gli endpoint condivisi usa `qcutils.init()` con le env
-    var iniettate dal deployment. Se serve un file di config, montalo/scaricalo
-    a runtime in `cf_path` (es. da JupyterHub) e questa funzione lo leggerà.
+    (anti-pattern): i parametri ``github_user``, ``github_token`` e
+    ``remote_cf_version`` sono conservati per retrocompatibilità di firma ma
+    ignorati. Per gli endpoint condivisi usa ``qcutils.init()`` con le env var
+    iniettate dal deployment. Se serve un file di config, montalo/scaricalo a
+    runtime in ``cf_path`` e questa funzione lo leggerà.
     """
     import yaml
+
     if not os.path.exists(cf_path):
         raise FileNotFoundError(
-            "Config file '{}' non trovato. Usa qcutils.init() con le env var "
-            "del deployment, oppure monta/scarica il file di config a runtime."
-            .format(cf_path)
+            f"Config file '{cf_path}' non trovato. Usa qcutils.init() con le env "
+            "var del deployment, oppure monta/scarica il file di config a runtime."
         )
     with open(cf_path) as ymlfile:
-        cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
-    return __search_sub_node(cfg, key.split("."))
+        cfg = yaml.safe_load(ymlfile)
+    return _search_sub_node(cfg, key.split("."))
 
 
 # =============================================================================
 # Materiali: compress / update / deliver / persist / restore
 # =============================================================================
 
-def compress_folder(path="/home/jovyan/materials"):
-    """Comprime la cartella indicata in un archivio .tar.gz nella home."""
-    try:
-        print("Compressing {} folder....".format(path.split("/")[-1]))
-        jhub_user = _resolve("", "jupyterhub_user", "JUPYTERHUB_USER")
-        output_filename = path.split("/")[-1] + "_" + jhub_user.replace(".", "_") + ".tar.gz"
-        if __make_tarfile(path, "/home/jovyan/" + output_filename):
-            print("You can find your {} in your home folder".format(output_filename))
-        else:
-            raise Exception("tar creation failed")
-    except Exception:
-        traceback.print_exc()
+def compress_folder(path: str = "/home/jovyan/materials", *, config: Config | None = None) -> str:
+    """Comprime la cartella indicata in un archivio .tar.gz nella home.
+
+    Ritorna il percorso dell'archivio creato. Solleva in caso di errore.
+    """
+    cfg = _resolve_config(config)
+    folder_name = path.rsplit("/", 1)[-1]
+    logger.info("Compressing %s folder....", folder_name)
+    jhub_user = cfg.jupyterhub_user or os.environ.get("JUPYTERHUB_USER", "")
+    output_filename = folder_name + "_" + jhub_user.replace(".", "_") + ".tar.gz"
+    output_path = "/home/jovyan/" + output_filename
+    if not _make_tarfile(path, output_path):
+        raise RuntimeError(f"Creazione archivio fallita per '{path}'")
+    logger.info("Archivio disponibile nella home: %s", output_filename)
+    return output_path
 
 
-def update_materials():
+def update_materials(*, config: Config | None = None) -> None:
     """Aggiorna /home/jovyan/materials dal repo GitHub della classe (gitpuller)."""
-    print("updating materials folder....")
-    repo = _resolve("", "github_repo", "GITHUB_REPO")
-    branch = _resolve("", "github_branch", "GITHUB_BRANCH")
-    os.system("gitpuller {} {} /home/jovyan/materials".format(repo, branch))
+    cfg = _resolve_config(config)
+    logger.info("updating materials folder....")
+    repo = cfg.github_repo or os.environ.get("GITHUB_REPO", "")
+    branch = cfg.github_branch or os.environ.get("GITHUB_BRANCH", "")
+    subprocess.run(
+        ["gitpuller", repo, branch, "/home/jovyan/materials"],
+        check=True,
+    )
 
 
-def deliver_bootcamp(path="/home/jovyan/materials/bootcamp"):
+def deliver_bootcamp(path: str = "/home/jovyan/materials/bootcamp", *, config: Config | None = None) -> None:
     """Comprime e carica la cartella sul bucket S3 quantia-bootcamp-results."""
-    push_to_remote("quantia-bootcamp-results", path)
+    push_to_remote("quantia-bootcamp-results", path, config=config)
 
 
-def persist_user_materials(path="/home/jovyan/materials"):
+def persist_user_materials(path: str = "/home/jovyan/materials", *, config: Config | None = None) -> None:
     """Comprime e carica la cartella sul bucket S3 quantia-platform-users."""
-    push_to_remote("quantia-platform-users", path)
+    push_to_remote("quantia-platform-users", path, config=config)
 
 
-def restore_user_materials(bucket="quantia-platform-users", local_file_path="/home/jovyan/"):
+def _restore_from_bucket(bucket: str, local_file_path: str, target_dir: str,
+                         source_index: int, *, config: Config | None = None) -> None:
+    """Recupera un archivio utente da S3 e lo estrae in ``target_dir``."""
+    if os.path.exists(target_dir):
+        shutil.rmtree(target_dir)
+
+    tar_file = pull_from_remote(bucket, local_file_path, config=config)
+    with tarfile.open(tar_file) as my_tar:
+        for member in my_tar.getmembers():
+            if ".ipynb_checkpoints" not in member.name:
+                my_tar.extract(member, path="/home/jovyan/tmp")
+
+    os.makedirs(target_dir, exist_ok=True)
+    source_dir = "/home/jovyan/tmp/" + tar_file.split("/")[source_index]
+    for file_name in os.listdir(source_dir):
+        shutil.move(os.path.join(source_dir, file_name), target_dir)
+
+    os.remove(tar_file)
+    shutil.rmtree("/home/jovyan/tmp/")
+
+
+def restore_user_materials(bucket: str = "quantia-platform-users",
+                           local_file_path: str = "/home/jovyan/",
+                           *, config: Config | None = None) -> None:
     """Recupera la cartella utente da S3 e la estrae in persistent-materials."""
-    folder_path = "/home/jovyan/persistent-materials"
-    if os.path.exists(folder_path):
-        shutil.rmtree(folder_path)
-
-    tar_file = pull_from_remote(bucket, local_file_path)
-    my_tar = tarfile.open(tar_file)
-    for member in my_tar.getmembers():
-        if ".ipynb_checkpoints" not in member.name:
-            my_tar.extract(member, path="/home/jovyan/tmp")
-    my_tar.close()
-
-    os.makedirs("/home/jovyan/persistent-materials", exist_ok=True)
-    source_dir = "/home/jovyan/tmp/" + tar_file.split("/")[3]
-    target_dir = "/home/jovyan/persistent-materials"
-    for file_name in os.listdir(source_dir):
-        shutil.move(os.path.join(source_dir, file_name), target_dir)
-
-    os.remove(tar_file)
-    shutil.rmtree("/home/jovyan/tmp/")
+    _restore_from_bucket(
+        bucket, local_file_path, "/home/jovyan/persistent-materials",
+        source_index=3, config=config,
+    )
 
 
-def restore_user_bootcamp(bucket="quantia-bootcamp-results", local_file_path="/home/jovyan/"):
+@_deprecated("restore_user_bootcamp() è deprecata e potrebbe essere rimossa in futuro.")
+def restore_user_bootcamp(bucket: str = "quantia-bootcamp-results",
+                          local_file_path: str = "/home/jovyan/",
+                          *, config: Config | None = None) -> None:
     """Recupera il bootcamp dell'utente da S3 e lo estrae in materials/bootcamp."""
-    folder_path = "/home/jovyan/materials/bootcamp"
-    if os.path.exists(folder_path):
-        shutil.rmtree(folder_path)
-
-    tar_file = pull_from_remote(bucket, local_file_path)
-    my_tar = tarfile.open(tar_file)
-    for member in my_tar.getmembers():
-        if ".ipynb_checkpoints" not in member.name:
-            my_tar.extract(member, path="/home/jovyan/tmp")
-    my_tar.close()
-
-    os.makedirs("/home/jovyan/materials/bootcamp", exist_ok=True)
-    source_dir = "/home/jovyan/tmp/" + tar_file.split("/")[-1]
-    target_dir = "/home/jovyan/materials/bootcamp"
-    for file_name in os.listdir(source_dir):
-        shutil.move(os.path.join(source_dir, file_name), target_dir)
-
-    os.remove(tar_file)
-    shutil.rmtree("/home/jovyan/tmp/")
+    _restore_from_bucket(
+        bucket, local_file_path, "/home/jovyan/materials/bootcamp",
+        source_index=-1, config=config,
+    )
 
 
 # =============================================================================
 # Spark
 # =============================================================================
 
-def init_spark_session(spark_session):
-    """Configura una SparkSession per leggere da S3 via s3a (creds da ~/.aws)."""
-    config = configparser.RawConfigParser()
-    config.read(os.path.expanduser("~/.aws/credentials"))
-    aws_key = config["default"]["aws_access_key_id"]
-    aws_secret = config["default"]["aws_secret_access_key"]
+def init_spark_session(spark_session: Any, *, config: Config | None = None) -> None:
+    """Configura una SparkSession per leggere da S3 via s3a.
+
+    Le credenziali AWS vengono prese da Config/env; in fallback dal file
+    ~/.aws/credentials se presente. Non scrive segreti su disco.
+    """
+    cfg = _resolve_config(config)
+    aws_key = cfg.aws_access_key_id or os.environ.get("AWS_ACCESS_KEY_ID", "")
+    aws_secret = cfg.aws_secret_access_key or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+
+    if not (aws_key and aws_secret):
+        creds_path = os.path.expanduser("~/.aws/credentials")
+        if os.path.exists(creds_path):
+            parser = configparser.RawConfigParser()
+            parser.read(creds_path)
+            aws_key = aws_key or parser["default"].get("aws_access_key_id", "")
+            aws_secret = aws_secret or parser["default"].get("aws_secret_access_key", "")
 
     hadoop_conf = spark_session.sparkContext._jsc.hadoopConfiguration()
-    hadoop_conf.set("fs.s3a.access.key", aws_key)
-    hadoop_conf.set("fs.s3a.secret.key", aws_secret)
+    if aws_key and aws_secret:
+        hadoop_conf.set("fs.s3a.access.key", aws_key)
+        hadoop_conf.set("fs.s3a.secret.key", aws_secret)
+    else:
+        logger.warning(
+            "Nessuna credenziale AWS trovata (Config/env/~/.aws): "
+            "s3a userà la default credential chain."
+        )
     hadoop_conf.set("fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
     spark_session.conf.set("spark.sql.repl.eagerEval.enabled", True)
 
@@ -311,92 +445,126 @@ def init_spark_session(spark_session):
 # Kafka — usa la Config (init), self-contained per default (localhost:9092)
 # =============================================================================
 
-def _kafka_admin_conf():
-    conf = {"bootstrap.servers": _resolve("", "kafka_bootstrap", "KAFKA_BOOTSTRAP_SERVERS")
-            or "localhost:9092"}
-    if _config.kafka_sasl_username:
+def _kafka_admin_conf(config: Config | None = None) -> dict[str, str]:
+    cfg = _resolve_config(config)
+    bootstrap = cfg.kafka_bootstrap or os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "") or "localhost:9092"
+    conf: dict[str, str] = {"bootstrap.servers": bootstrap}
+    if cfg.kafka_sasl_username:
         conf.update({
             "sasl.mechanisms": "PLAIN",
             "security.protocol": "SASL_SSL",
-            "sasl.username": _config.kafka_sasl_username,
-            "sasl.password": _config.kafka_sasl_password,
+            "sasl.username": cfg.kafka_sasl_username,
+            "sasl.password": cfg.kafka_sasl_password,
         })
     return conf
 
 
-def kafka_srv_description():
-    """Mostra una tabella con gli endpoint streaming configurati."""
-    from tabulate import tabulate
+def kafka_srv_description(*, config: Config | None = None) -> str:
+    """Ritorna una tabella (stringa) con gli endpoint streaming configurati.
+
+    Nota: ritorna la stringa (non stampa). I notebook usano
+    ``print(qcutils.kafka_srv_description())``.
+    """
+    cfg = _resolve_config(config)
     rows = [
-        ["Kafka", _resolve("", "kafka_bootstrap", "KAFKA_BOOTSTRAP_SERVERS") or "localhost:9092"],
-        ["Schema Registry", _config.schema_registry_url or "-"],
-        ["Flink REST", _config.flink_rest_url or "-"],
+        ["Kafka", cfg.kafka_bootstrap or "localhost:9092"],
+        ["Schema Registry", cfg.schema_registry_url or "-"],
+        ["Flink REST", cfg.flink_rest_url or "-"],
     ]
-    print(tabulate(rows, headers=["Service", "Endpoint"], tablefmt="pretty"))
+    headers = ["Service", "Endpoint"]
+    try:
+        from tabulate import tabulate
+
+        return tabulate(rows, headers=headers, tablefmt="pretty")
+    except ImportError:
+        # Fallback senza dipendenza: tabella testuale minimale.
+        width = max(len(headers[0]), *(len(r[0]) for r in rows))
+        lines = [f"{headers[0]:<{width}}  {headers[1]}"]
+        lines += [f"{r[0]:<{width}}  {r[1]}" for r in rows]
+        return "\n".join(lines)
 
 
-def create_kafka_topic(topic, partitions=1, replication=1):
+def create_kafka_topic(topic: str, partitions: int = 1, replication: int = 1,
+                       *, config: Config | None = None) -> None:
     """Crea un topic Kafka sul broker configurato (init/env, default localhost)."""
-    from confluent_kafka.admin import AdminClient, NewTopic
     from confluent_kafka import KafkaError
+    from confluent_kafka.admin import AdminClient, NewTopic
 
-    a = AdminClient(_kafka_admin_conf())
-    fs = a.create_topics([NewTopic(topic, num_partitions=partitions, replication_factor=replication)])
-    for topic, f in fs.items():
+    admin = AdminClient(_kafka_admin_conf(config))
+    futures = admin.create_topics(
+        [NewTopic(topic, num_partitions=partitions, replication_factor=replication)]
+    )
+    for topic_name, future in futures.items():
         try:
-            f.result()
-            print("Topic {} created".format(topic))
-        except Exception as e:
-            if e.args[0].code() == KafkaError.TOPIC_ALREADY_EXISTS:
-                print("{}".format(e))
+            future.result()
+            logger.info("Topic %s created", topic_name)
+        except Exception as e:  # confluent_kafka.KafkaException
+            if e.args and hasattr(e.args[0], "code") and e.args[0].code() == KafkaError.TOPIC_ALREADY_EXISTS:
+                logger.info("Topic %s già esistente", topic_name)
             else:
-                print("Failed to create topic {}: {}".format(topic, e))
+                logger.error("Failed to create topic %s: %s", topic_name, e)
+                raise
 
 
 # =============================================================================
 # S3
 # =============================================================================
 
-def push_to_remote(bucket, path="/home/jovyan/materials"):
+def push_to_remote(bucket: str, path: str = "/home/jovyan/materials",
+                   *, config: Config | None = None) -> None:
     """Comprime la cartella e carica l'archivio sul bucket S3 indicato."""
-    compress_folder(path)
-    print("Sending compressed {} to qc repo....".format(path.split("/")[-1]))
-    ghb = _resolve("", "github_branch", "GITHUB_BRANCH")
-    jhub_user = _resolve("", "jupyterhub_user", "JUPYTERHUB_USER")
-    file_name = path.split("/")[-1] + "_" + jhub_user.replace(".", "_") + ".tar.gz"
-    if __upload_file_s3("/home/jovyan/" + file_name, bucket, ghb + "/" + file_name):
-        print("{} is now on qc remote repo -> {}".format(path.split("/")[-1], ghb + "/" + file_name))
+    cfg = _resolve_config(config)
+    compress_folder(path, config=cfg)
+    folder_name = path.rsplit("/", 1)[-1]
+    logger.info("Sending compressed %s to qc repo....", folder_name)
+    ghb = cfg.github_branch or os.environ.get("GITHUB_BRANCH", "")
+    jhub_user = cfg.jupyterhub_user or os.environ.get("JUPYTERHUB_USER", "")
+    file_name = folder_name + "_" + jhub_user.replace(".", "_") + ".tar.gz"
+    remote_key = ghb + "/" + file_name
+    if _upload_file_s3("/home/jovyan/" + file_name, bucket, remote_key):
+        logger.info("%s is now on qc remote repo -> %s", folder_name, remote_key)
 
 
-def pull_from_remote(bucket, local_file_path):
+def pull_from_remote(bucket: str, local_file_path: str, *, config: Config | None = None) -> str:
     """Recupera l'archivio dell'utente dal bucket S3 indicato."""
     import boto3
+
+    cfg = _resolve_config(config)
     if not local_file_path.endswith("/"):
         local_file_path = local_file_path + "/"
-    ghb = _resolve("", "github_branch", "GITHUB_BRANCH")
-    jhub_user = _resolve("", "jupyterhub_user", "JUPYTERHUB_USER")
+    ghb = cfg.github_branch or os.environ.get("GITHUB_BRANCH", "")
+    jhub_user = cfg.jupyterhub_user or os.environ.get("JUPYTERHUB_USER", "")
     file_name = jhub_user.replace(".", "_") + ".tar.gz"
 
     s3_rs = boto3.resource("s3")
     s3_client = boto3.client("s3")
     for obj in s3_rs.Bucket(bucket).objects.filter(Prefix=ghb + "/"):
         if obj.key.endswith(file_name):
-            s3_client.download_file(bucket, obj.key, local_file_path + obj.key.split("/")[1])
-            return local_file_path + obj.key.split("/")[1]
-    raise FileNotFoundError("Nessun archivio per l'utente in s3://{}/{}".format(bucket, ghb))
+            dest = local_file_path + obj.key.split("/")[1]
+            s3_client.download_file(bucket, obj.key, dest)
+            return dest
+    raise FileNotFoundError(f"Nessun archivio per l'utente in s3://{bucket}/{ghb}")
 
 
-def list_s3_bucket_objects(bucket_name="quantia-master", prefix="training", limit=10):
-    """Elenca gli oggetti in un bucket/prefix S3."""
+@_deprecated("list_s3_bucket_objects() è deprecata e potrebbe essere rimossa in futuro.")
+def list_s3_bucket_objects(bucket_name: str = "quantia-master", prefix: str = "training",
+                           limit: int = 10) -> list[str]:
+    """Elenca gli oggetti in un bucket/prefix S3. Ritorna la lista delle key."""
     import boto3
+
     objects = boto3.client("s3").list_objects_v2(Bucket=bucket_name, Prefix=prefix)
-    for obj in (objects.get("Contents") or [])[:limit]:
-        print(obj.get("Key"))
+    keys = [obj.get("Key") for obj in (objects.get("Contents") or [])[:limit]]
+    for key in keys:
+        logger.info("%s", key)
+    return keys
 
 
-def print_s3_bucket_object(key, bucket_name="quantia-master", size=1000, decode=True):
-    """Stampa il contenuto (parziale) di un oggetto S3."""
+@_deprecated("print_s3_bucket_object() è deprecata e potrebbe essere rimossa in futuro.")
+def print_s3_bucket_object(key: str, bucket_name: str = "quantia-master",
+                           size: int = 1000, decode: bool = True) -> str | bytes:
+    """Ritorna il contenuto (parziale) di un oggetto S3."""
     import boto3
+
     obj = boto3.client("s3").get_object(Bucket=bucket_name, Key=key)
     body = obj.get("Body").read(size)
-    print(body.decode(encoding="utf-8", errors="ignore") if decode else body)
+    return body.decode(encoding="utf-8", errors="ignore") if decode else body
