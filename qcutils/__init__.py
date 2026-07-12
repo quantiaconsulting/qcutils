@@ -38,7 +38,7 @@ from typing import Any, Callable, TypeVar
 
 logger = logging.getLogger("qcutils")
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -254,31 +254,78 @@ def _make_tarfile(source_dir: str, output_path: str) -> bool:
     return True
 
 
-def _upload_file_s3(file_name: str, bucket: str, object_name: str | None = None) -> bool:
+def _aws_credentials(config: Config | None = None) -> dict[str, str]:
+    """Ricava le credenziali AWS con precedenza Config > env > ~/.aws.
+
+    Ritorna un dict adatto a essere passato come ``**kwargs`` a
+    ``boto3.client``/``boto3.resource``. Se non trova nulla ritorna un dict
+    vuoto, così boto3 ricade sulla propria default credential chain (env var,
+    ~/.aws, IAM role) senza che noi imponiamo credenziali fittizie.
+    """
+    cfg = _resolve_config(config)
+    key = cfg.aws_access_key_id or os.environ.get("AWS_ACCESS_KEY_ID", "")
+    secret = cfg.aws_secret_access_key or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+    region = cfg.aws_region or os.environ.get("AWS_DEFAULT_REGION", "")
+
+    if not (key and secret):
+        creds_path = os.path.expanduser("~/.aws/credentials")
+        if os.path.exists(creds_path):
+            parser = configparser.RawConfigParser()
+            parser.read(creds_path)
+            if parser.has_section("default"):
+                key = key or parser["default"].get("aws_access_key_id", "")
+                secret = secret or parser["default"].get("aws_secret_access_key", "")
+
+    creds: dict[str, str] = {}
+    if key and secret:
+        creds["aws_access_key_id"] = key
+        creds["aws_secret_access_key"] = secret
+    if region:
+        creds["region_name"] = region
+    return creds
+
+
+def _s3_client(config: Config | None = None) -> Any:
+    """Crea un client boto3 S3 usando le credenziali della Config (o default chain)."""
     import boto3
-    from botocore.exceptions import ClientError
+
+    return boto3.client("s3", **_aws_credentials(config))
+
+
+def _s3_resource(config: Config | None = None) -> Any:
+    """Crea una resource boto3 S3 usando le credenziali della Config (o default chain)."""
+    import boto3
+
+    return boto3.resource("s3", **_aws_credentials(config))
+
+
+def _upload_file_s3(file_name: str, bucket: str, object_name: str | None = None,
+                    *, config: Config | None = None) -> bool:
+    # BotoCoreError copre anche NoCredentialsError ("Unable to locate credentials"),
+    # che NON è una ClientError: senza questo, l'assenza di credenziali sfuggirebbe.
+    from botocore.exceptions import BotoCoreError, ClientError
 
     if object_name is None:
         object_name = file_name
-    s3_client = boto3.client("s3")
+    s3_client = _s3_client(config)
     try:
         s3_client.upload_file(file_name, bucket, object_name)
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
         logger.error("Upload S3 fallito: %s", e)
         return False
     return True
 
 
-def _download_file_s3(file_name: str, bucket: str, object_name: str | None = None) -> bool:
-    import boto3
-    from botocore.exceptions import ClientError
+def _download_file_s3(file_name: str, bucket: str, object_name: str | None = None,
+                      *, config: Config | None = None) -> bool:
+    from botocore.exceptions import BotoCoreError, ClientError
 
     if object_name is None:
         object_name = file_name
-    s3_client = boto3.client("s3")
+    s3_client = _s3_client(config)
     try:
         s3_client.download_file(bucket, object_name, file_name)
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
         logger.error("Download S3 fallito: %s", e)
         return False
     return True
@@ -417,16 +464,9 @@ def init_spark_session(spark_session: Any, *, config: Config | None = None) -> N
     ~/.aws/credentials se presente. Non scrive segreti su disco.
     """
     cfg = _resolve_config(config)
-    aws_key = cfg.aws_access_key_id or os.environ.get("AWS_ACCESS_KEY_ID", "")
-    aws_secret = cfg.aws_secret_access_key or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-
-    if not (aws_key and aws_secret):
-        creds_path = os.path.expanduser("~/.aws/credentials")
-        if os.path.exists(creds_path):
-            parser = configparser.RawConfigParser()
-            parser.read(creds_path)
-            aws_key = aws_key or parser["default"].get("aws_access_key_id", "")
-            aws_secret = aws_secret or parser["default"].get("aws_secret_access_key", "")
+    creds = _aws_credentials(cfg)
+    aws_key = creds.get("aws_access_key_id", "")
+    aws_secret = creds.get("aws_secret_access_key", "")
 
     hadoop_conf = spark_session.sparkContext._jsc.hadoopConfiguration()
     if aws_key and aws_secret:
@@ -521,14 +561,17 @@ def push_to_remote(bucket: str, path: str = "/home/jovyan/materials",
     jhub_user = cfg.jupyterhub_user or os.environ.get("JUPYTERHUB_USER", "")
     file_name = folder_name + "_" + jhub_user.replace(".", "_") + ".tar.gz"
     remote_key = ghb + "/" + file_name
-    if _upload_file_s3("/home/jovyan/" + file_name, bucket, remote_key):
-        logger.info("%s is now on qc remote repo -> %s", folder_name, remote_key)
+    if not _upload_file_s3("/home/jovyan/" + file_name, bucket, remote_key, config=cfg):
+        raise RuntimeError(
+            f"Upload su s3://{bucket}/{remote_key} fallito. Verifica le credenziali "
+            "AWS (env AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, ~/.aws/credentials, "
+            "IAM role del pod, oppure qcutils.init(aws_access_key_id=..., ...))."
+        )
+    logger.info("%s is now on qc remote repo -> %s", folder_name, remote_key)
 
 
 def pull_from_remote(bucket: str, local_file_path: str, *, config: Config | None = None) -> str:
     """Recupera l'archivio dell'utente dal bucket S3 indicato."""
-    import boto3
-
     cfg = _resolve_config(config)
     if not local_file_path.endswith("/"):
         local_file_path = local_file_path + "/"
@@ -536,11 +579,11 @@ def pull_from_remote(bucket: str, local_file_path: str, *, config: Config | None
     jhub_user = cfg.jupyterhub_user or os.environ.get("JUPYTERHUB_USER", "")
     file_name = jhub_user.replace(".", "_") + ".tar.gz"
 
-    s3_rs = boto3.resource("s3")
-    s3_client = boto3.client("s3")
+    s3_rs = _s3_resource(cfg)
+    s3_client = _s3_client(cfg)
     for obj in s3_rs.Bucket(bucket).objects.filter(Prefix=ghb + "/"):
         if obj.key.endswith(file_name):
-            dest = local_file_path + obj.key.split("/")[1]
+            dest = local_file_path + os.path.basename(obj.key)
             s3_client.download_file(bucket, obj.key, dest)
             return dest
     raise FileNotFoundError(f"Nessun archivio per l'utente in s3://{bucket}/{ghb}")
@@ -550,9 +593,7 @@ def pull_from_remote(bucket: str, local_file_path: str, *, config: Config | None
 def list_s3_bucket_objects(bucket_name: str = "quantia-master", prefix: str = "training",
                            limit: int = 10) -> list[str]:
     """Elenca gli oggetti in un bucket/prefix S3. Ritorna la lista delle key."""
-    import boto3
-
-    objects = boto3.client("s3").list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+    objects = _s3_client().list_objects_v2(Bucket=bucket_name, Prefix=prefix)
     keys = [obj.get("Key") for obj in (objects.get("Contents") or [])[:limit]]
     for key in keys:
         logger.info("%s", key)
@@ -563,8 +604,6 @@ def list_s3_bucket_objects(bucket_name: str = "quantia-master", prefix: str = "t
 def print_s3_bucket_object(key: str, bucket_name: str = "quantia-master",
                            size: int = 1000, decode: bool = True) -> str | bytes:
     """Ritorna il contenuto (parziale) di un oggetto S3."""
-    import boto3
-
-    obj = boto3.client("s3").get_object(Bucket=bucket_name, Key=key)
+    obj = _s3_client().get_object(Bucket=bucket_name, Key=key)
     body = obj.get("Body").read(size)
     return body.decode(encoding="utf-8", errors="ignore") if decode else body

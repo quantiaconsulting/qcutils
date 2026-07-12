@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qcutils"
-version = "1.0.0"
+version = "1.0.1"
 description = "Utilities per i progetti educational di Quantia Consulting"
 readme = "README.md"
 license = { text = "Apache-2.0" }

@@ -4,6 +4,8 @@ Nessuna rete reale: boto3/confluent-kafka sono mockati o saltati.
 """
 from __future__ import annotations
 
+import sys
+import types
 import warnings
 
 import pytest
@@ -15,8 +17,8 @@ import qcutils
 # Versione e API pubblica
 # ---------------------------------------------------------------------------
 
-def test_version_is_1_0_0():
-    assert qcutils.__version__ == "1.0.0"
+def test_version_is_1_0_1():
+    assert qcutils.__version__ == "1.0.1"
 
 
 def test_public_api_present():
@@ -189,3 +191,58 @@ def test_deprecated_decorator_reusable():
         warnings.simplefilter("always")
         assert foo() == 42
     assert any(issubclass(x.category, DeprecationWarning) for x in w)
+
+
+# ---------------------------------------------------------------------------
+# Credenziali AWS: precedenza e propagazione a boto3 (regressione 1.0.1)
+# ---------------------------------------------------------------------------
+
+def test_aws_credentials_from_config():
+    cfg = qcutils.Config.from_env(
+        aws_access_key_id="AKIATEST",
+        aws_secret_access_key="s3cr3t",
+        aws_region="eu-west-1",
+    )
+    creds = qcutils._aws_credentials(cfg)
+    assert creds["aws_access_key_id"] == "AKIATEST"
+    assert creds["aws_secret_access_key"] == "s3cr3t"
+    assert creds["region_name"] == "eu-west-1"
+
+
+def test_aws_credentials_empty_falls_back_to_default_chain(monkeypatch, tmp_path):
+    for var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))  # nessun ~/.aws/credentials
+    cfg = qcutils.Config.from_env()
+    assert qcutils._aws_credentials(cfg) == {}
+
+
+def test_s3_client_passes_config_credentials(monkeypatch):
+    """Le credenziali della Config devono arrivare a boto3.client (bug 1.0.0)."""
+    captured = {}
+
+    def fake_client(service, **kwargs):
+        captured["service"] = service
+        captured["kwargs"] = kwargs
+        return object()
+
+    fake_boto3 = types.ModuleType("boto3")
+    fake_boto3.client = fake_client
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+
+    cfg = qcutils.Config.from_env(
+        aws_access_key_id="AKIATEST", aws_secret_access_key="s3cr3t", aws_region="eu-west-1",
+    )
+    qcutils._s3_client(cfg)
+    assert captured["service"] == "s3"
+    assert captured["kwargs"]["aws_access_key_id"] == "AKIATEST"
+    assert captured["kwargs"]["region_name"] == "eu-west-1"
+
+
+def test_push_to_remote_raises_on_upload_failure(monkeypatch, tmp_path):
+    """Una consegna fallita deve sollevare, non fallire in silenzio (bug 1.0.0)."""
+    monkeypatch.setattr(qcutils, "compress_folder", lambda path, config=None: str(tmp_path / "x.tar.gz"))
+    monkeypatch.setattr(qcutils, "_upload_file_s3", lambda *a, **k: False)
+    cfg = qcutils.Config.from_env()
+    with pytest.raises(RuntimeError):
+        qcutils.push_to_remote("quantia-bootcamp-results", "/home/jovyan/materials/bootcamp", config=cfg)
