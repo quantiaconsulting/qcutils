@@ -17,8 +17,8 @@ import qcutils
 # Versione e API pubblica
 # ---------------------------------------------------------------------------
 
-def test_version_is_1_0_1():
-    assert qcutils.__version__ == "1.0.1"
+def test_version_is_1_1_0():
+    assert qcutils.__version__ == "1.1.0"
 
 
 def test_public_api_present():
@@ -241,8 +241,92 @@ def test_s3_client_passes_config_credentials(monkeypatch):
 
 def test_push_to_remote_raises_on_upload_failure(monkeypatch, tmp_path):
     """Una consegna fallita deve sollevare, non fallire in silenzio (bug 1.0.0)."""
-    monkeypatch.setattr(qcutils, "compress_folder", lambda path, config=None: str(tmp_path / "x.tar.gz"))
+    archive = tmp_path / "bootcamp_u.tar.gz"
+    archive.write_bytes(b"x" * 16)
+    monkeypatch.setattr(qcutils, "compress_folder",
+                        lambda path, *, config=None, progress=True: str(archive))
     monkeypatch.setattr(qcutils, "_upload_file_s3", lambda *a, **k: False)
     cfg = qcutils.Config.from_env()
     with pytest.raises(RuntimeError):
-        qcutils.push_to_remote("quantia-bootcamp-results", "/home/jovyan/materials/bootcamp", config=cfg)
+        qcutils.push_to_remote("quantia-bootcamp-results", "/home/jovyan/materials/bootcamp",
+                               config=cfg, progress=False)
+
+
+# ---------------------------------------------------------------------------
+# 1.1.0: progress, esclusioni, riepilogo/URI di ritorno
+# ---------------------------------------------------------------------------
+
+def test_human_readable_sizes():
+    assert qcutils._human(0) == "0 B"
+    assert qcutils._human(1536).endswith("KB")
+    assert "MB" in qcutils._human(5 * 1024 * 1024)
+
+
+def test_dir_stats_excludes_junk(tmp_path):
+    (tmp_path / "a.txt").write_text("12345")
+    ck = tmp_path / ".ipynb_checkpoints"
+    ck.mkdir()
+    (ck / "j.txt").write_text("zzz")
+    total, n = qcutils._dir_stats(str(tmp_path))
+    assert n == 1
+    assert total == 5
+
+
+def test_make_tarfile_excludes_junk_and_updates_bar(tmp_path):
+    import tarfile as _tf
+
+    src = tmp_path / "materials"
+    (src / "sub").mkdir(parents=True)
+    (src / "a.txt").write_text("hello")           # 5 byte
+    (src / "sub" / "b.txt").write_text("world!!")  # 7 byte
+    (src / ".ipynb_checkpoints").mkdir()
+    (src / ".ipynb_checkpoints" / "junk").write_text("nope")
+    (src / "__pycache__").mkdir()
+    (src / "__pycache__" / "x.pyc").write_text("nope")
+
+    class Bar:
+        def __init__(self):
+            self.total = 0
+
+        def update(self, n):
+            self.total += n
+
+        def close(self):
+            pass
+
+    bar = Bar()
+    out = tmp_path / "materials_u.tar.gz"
+    assert qcutils._make_tarfile(str(src), str(out), bar=bar)
+
+    with _tf.open(out) as tar:
+        names = tar.getnames()
+    assert not any(".ipynb_checkpoints" in n for n in names)
+    assert not any("__pycache__" in n for n in names)
+    assert any(n.endswith("a.txt") for n in names)
+    assert any(n.endswith("sub/b.txt") for n in names)
+    assert bar.total == len("hello") + len("world!!")
+
+
+def test_push_to_remote_returns_s3_uri_and_calls_upload(monkeypatch, tmp_path):
+    monkeypatch.setenv("JUPYTERHUB_USER", "mario.rossi")
+    monkeypatch.setenv("GITHUB_BRANCH", "hare2026")
+    archive = tmp_path / "bootcamp_mario_rossi.tar.gz"
+    archive.write_bytes(b"data")
+
+    monkeypatch.setattr(qcutils, "compress_folder",
+                        lambda path, *, config=None, progress=True: str(archive))
+    captured = {}
+
+    def fake_upload(file_name, bucket, key, *, config=None, callback=None):
+        captured.update(file=file_name, bucket=bucket, key=key)
+        if callback:
+            callback(4)  # simula avanzamento upload
+        return True
+
+    monkeypatch.setattr(qcutils, "_upload_file_s3", fake_upload)
+
+    cfg = qcutils.Config.from_env()
+    uri = qcutils.deliver_bootcamp("/home/jovyan/materials/bootcamp", config=cfg, progress=False)
+    assert uri == "s3://quantia-bootcamp-results/hare2026/bootcamp_mario_rossi.tar.gz"
+    assert captured["key"] == "hare2026/bootcamp_mario_rossi.tar.gz"
+    assert captured["bucket"] == "quantia-bootcamp-results"

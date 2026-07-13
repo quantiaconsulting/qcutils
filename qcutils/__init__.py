@@ -21,6 +21,10 @@ notebook restano identiche. Le funzioni probabilmente non più usate emettono un
 `DeprecationWarning` ma continuano a funzionare. Le dipendenze pesanti
 (boto3, tabulate, confluent-kafka) sono importate in modo *lazy*, così che
 `import qcutils` e `qcutils.init()` funzionino anche senza extra installati.
+
+Le operazioni S3 (deliver_bootcamp, persist_user_materials, restore_*) mostrano
+l'avanzamento: usano ``tqdm`` se disponibile (barra/box nel notebook), altrimenti
+ripiegano su messaggi di log. ``tqdm`` è un extra opzionale.
 """
 from __future__ import annotations
 
@@ -38,7 +42,7 @@ from typing import Any, Callable, TypeVar
 
 logger = logging.getLogger("qcutils")
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -243,13 +247,120 @@ def _search_sub_node(node: Any, lst: list[str]) -> Any:
     return subnode
 
 
-def _make_tarfile(source_dir: str, output_path: str) -> bool:
+# --- Progress & formattazione output utente ----------------------------------
+
+# Junk escluso dagli archivi (già ignorato in fase di restore).
+_ARCHIVE_EXCLUDE = ("__pycache__", ".ipynb_checkpoints")
+
+
+def _human(num: float) -> str:
+    """Formatta un numero di byte in forma leggibile (es. '12.3 MB')."""
+    value = float(num)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(value) < 1024 or unit == "TB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} PB"
+
+
+def _dir_stats(path: str, exclude: tuple[str, ...] = _ARCHIVE_EXCLUDE) -> tuple[int, int]:
+    """Ritorna (byte_totali, numero_file) sotto ``path``, escludendo ``exclude``."""
+    total = 0
+    count = 0
+    excl = set(exclude)
+    for root, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if d not in excl]
+        for name in files:
+            fp = os.path.join(root, name)
+            try:
+                if not os.path.islink(fp):
+                    total += os.path.getsize(fp)
+                    count += 1
+            except OSError:
+                pass
+    return total, count
+
+
+class _SilentBar:
+    """Barra no-op (progress disattivato)."""
+
+    def update(self, n: int = 1) -> None: ...
+    def close(self) -> None: ...
+    def __enter__(self) -> "_SilentBar":
+        return self
+
+    def __exit__(self, *exc: Any) -> None: ...
+
+
+class _LogBar:
+    """Fallback quando tqdm non è installato: log a step di ~10%."""
+
+    def __init__(self, total: int, desc: str) -> None:
+        self._total = total or 0
+        self._desc = desc
+        self._done = 0
+        self._last = 0
+        logger.info("%s: avvio (%s)", desc, _human(self._total))
+
+    def update(self, n: int = 1) -> None:
+        self._done += n
+        if self._total:
+            pct = int(self._done * 100 / self._total)
+            if pct >= self._last + 10:
+                self._last = pct - (pct % 10)
+                logger.info("%s: %d%% (%s)", self._desc, pct, _human(self._done))
+
+    def close(self) -> None:
+        logger.info("%s: completato (%s)", self._desc, _human(self._done))
+
+    def __enter__(self) -> "_LogBar":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+
+def _make_progress(total: int, desc: str, *, enabled: bool = True) -> Any:
+    """Barra di avanzamento: tqdm (box nel notebook) se c'è, altrimenti log."""
+    if not enabled:
+        return _SilentBar()
+    try:
+        from tqdm.auto import tqdm
+
+        return tqdm(total=total, desc=desc, unit="B", unit_scale=True,
+                    unit_divisor=1024, leave=True)
+    except Exception:
+        return _LogBar(total, desc)
+
+
+def _user_msg(text: str) -> None:
+    """Messaggio ben visibile all'utente nel notebook (non un log diagnostico)."""
+    try:
+        from tqdm.auto import tqdm
+
+        tqdm.write(text)
+    except Exception:
+        print(text)
+
+
+def _make_tarfile(source_dir: str, output_path: str, *,
+                  exclude: tuple[str, ...] = _ARCHIVE_EXCLUDE, bar: Any = None) -> bool:
     if not output_path.endswith(".tar.gz"):
         logger.error("output_path deve terminare con il nome dell'archivio .tar.gz")
         return False
-    output_filename = output_path.rsplit("/", 1)[-1]
+    output_filename = os.path.basename(output_path)
+    excl = set(exclude)
+
+    def _filter(tarinfo: tarfile.TarInfo) -> "tarfile.TarInfo | None":
+        # Dir escluse -> None: tarfile salta l'intero sottoalbero (niente recursion).
+        if excl.intersection(tarinfo.name.split("/")):
+            return None
+        if bar is not None and tarinfo.isfile():
+            bar.update(tarinfo.size)
+        return tarinfo
+
     with tarfile.open(output_path, "w:gz") as tar:
-        tar.add(source_dir, arcname=output_filename)
+        tar.add(source_dir, arcname=output_filename, filter=_filter)
     logger.info("Archivio creato: %s", output_path)
     return True
 
@@ -285,22 +396,51 @@ def _aws_credentials(config: Config | None = None) -> dict[str, str]:
     return creds
 
 
+def _boto_config() -> Any:
+    """Config botocore con retry adattivi. None se botocore non è disponibile."""
+    try:
+        from botocore.config import Config as BotoConfig
+
+        return BotoConfig(retries={"max_attempts": 5, "mode": "adaptive"})
+    except Exception:
+        return None
+
+
+def _transfer_config() -> Any:
+    """TransferConfig per l'upload multipart. None se non disponibile."""
+    try:
+        from boto3.s3.transfer import TransferConfig
+
+        return TransferConfig(multipart_threshold=8 * 1024 * 1024,
+                              max_concurrency=4, use_threads=True)
+    except Exception:
+        return None
+
+
 def _s3_client(config: Config | None = None) -> Any:
-    """Crea un client boto3 S3 usando le credenziali della Config (o default chain)."""
+    """Client boto3 S3 con credenziali della Config (o default chain) e retry."""
     import boto3
 
-    return boto3.client("s3", **_aws_credentials(config))
+    kwargs = _aws_credentials(config)
+    boto_cfg = _boto_config()
+    if boto_cfg is not None:
+        kwargs["config"] = boto_cfg
+    return boto3.client("s3", **kwargs)
 
 
 def _s3_resource(config: Config | None = None) -> Any:
-    """Crea una resource boto3 S3 usando le credenziali della Config (o default chain)."""
+    """Resource boto3 S3 con credenziali della Config (o default chain) e retry."""
     import boto3
 
-    return boto3.resource("s3", **_aws_credentials(config))
+    kwargs = _aws_credentials(config)
+    boto_cfg = _boto_config()
+    if boto_cfg is not None:
+        kwargs["config"] = boto_cfg
+    return boto3.resource("s3", **kwargs)
 
 
 def _upload_file_s3(file_name: str, bucket: str, object_name: str | None = None,
-                    *, config: Config | None = None) -> bool:
+                    *, config: Config | None = None, callback: Any = None) -> bool:
     # BotoCoreError copre anche NoCredentialsError ("Unable to locate credentials"),
     # che NON è una ClientError: senza questo, l'assenza di credenziali sfuggirebbe.
     from botocore.exceptions import BotoCoreError, ClientError
@@ -309,7 +449,8 @@ def _upload_file_s3(file_name: str, bucket: str, object_name: str | None = None,
         object_name = file_name
     s3_client = _s3_client(config)
     try:
-        s3_client.upload_file(file_name, bucket, object_name)
+        s3_client.upload_file(file_name, bucket, object_name,
+                              Callback=callback, Config=_transfer_config())
     except (ClientError, BotoCoreError) as e:
         logger.error("Upload S3 fallito: %s", e)
         return False
@@ -317,14 +458,15 @@ def _upload_file_s3(file_name: str, bucket: str, object_name: str | None = None,
 
 
 def _download_file_s3(file_name: str, bucket: str, object_name: str | None = None,
-                      *, config: Config | None = None) -> bool:
+                      *, config: Config | None = None, callback: Any = None) -> bool:
     from botocore.exceptions import BotoCoreError, ClientError
 
     if object_name is None:
         object_name = file_name
     s3_client = _s3_client(config)
     try:
-        s3_client.download_file(bucket, object_name, file_name)
+        s3_client.download_file(bucket, object_name, file_name,
+                                Callback=callback, Config=_transfer_config())
     except (ClientError, BotoCoreError) as e:
         logger.error("Download S3 fallito: %s", e)
         return False
@@ -372,20 +514,29 @@ def read_config_value(
 # Materiali: compress / update / deliver / persist / restore
 # =============================================================================
 
-def compress_folder(path: str = "/home/jovyan/materials", *, config: Config | None = None) -> str:
-    """Comprime la cartella indicata in un archivio .tar.gz nella home.
+def compress_folder(path: str = "/home/jovyan/materials", *,
+                    config: Config | None = None, progress: bool = True) -> str:
+    """Comprime la cartella in un archivio .tar.gz nella home, con avanzamento.
 
+    Mostra una barra di progresso (box tqdm nel notebook, o log di fallback).
     Ritorna il percorso dell'archivio creato. Solleva in caso di errore.
     """
     cfg = _resolve_config(config)
-    folder_name = path.rsplit("/", 1)[-1]
-    logger.info("Compressing %s folder....", folder_name)
+    folder_name = os.path.basename(path.rstrip("/"))
     jhub_user = cfg.jupyterhub_user or os.environ.get("JUPYTERHUB_USER", "")
     output_filename = folder_name + "_" + jhub_user.replace(".", "_") + ".tar.gz"
-    output_path = "/home/jovyan/" + output_filename
-    if not _make_tarfile(path, output_path):
+    output_path = os.path.join(os.path.expanduser("~"), output_filename)
+
+    total, n_files = _dir_stats(path)
+    logger.info("Compressione %s (%d file, %s)....", folder_name, n_files, _human(total))
+    bar = _make_progress(total, f"📦 Compressione {folder_name}", enabled=progress)
+    try:
+        ok = _make_tarfile(path, output_path, bar=bar)
+    finally:
+        bar.close()
+    if not ok:
         raise RuntimeError(f"Creazione archivio fallita per '{path}'")
-    logger.info("Archivio disponibile nella home: %s", output_filename)
+    logger.info("Archivio creato: %s (%s)", output_filename, _human(os.path.getsize(output_path)))
     return output_path
 
 
@@ -401,14 +552,24 @@ def update_materials(*, config: Config | None = None) -> None:
     )
 
 
-def deliver_bootcamp(path: str = "/home/jovyan/materials/bootcamp", *, config: Config | None = None) -> None:
-    """Comprime e carica la cartella sul bucket S3 quantia-bootcamp-results."""
-    push_to_remote("quantia-bootcamp-results", path, config=config)
+def deliver_bootcamp(path: str = "/home/jovyan/materials/bootcamp", *,
+                     config: Config | None = None, progress: bool = True) -> str:
+    """Comprime e consegna il bootcamp sul bucket S3 quantia-bootcamp-results.
+
+    Ritorna l'URI ``s3://...`` dell'archivio consegnato.
+    """
+    return push_to_remote("quantia-bootcamp-results", path, config=config,
+                          progress=progress, label="Consegna bootcamp")
 
 
-def persist_user_materials(path: str = "/home/jovyan/materials", *, config: Config | None = None) -> None:
-    """Comprime e carica la cartella sul bucket S3 quantia-platform-users."""
-    push_to_remote("quantia-platform-users", path, config=config)
+def persist_user_materials(path: str = "/home/jovyan/materials", *,
+                           config: Config | None = None, progress: bool = True) -> str:
+    """Comprime e salva i materiali sul bucket S3 quantia-platform-users.
+
+    Ritorna l'URI ``s3://...`` dell'archivio salvato.
+    """
+    return push_to_remote("quantia-platform-users", path, config=config,
+                          progress=progress, label="Backup materiali")
 
 
 def _restore_from_bucket(bucket: str, local_file_path: str, target_dir: str,
@@ -550,28 +711,51 @@ def create_kafka_topic(topic: str, partitions: int = 1, replication: int = 1,
 # S3
 # =============================================================================
 
-def push_to_remote(bucket: str, path: str = "/home/jovyan/materials",
-                   *, config: Config | None = None) -> None:
-    """Comprime la cartella e carica l'archivio sul bucket S3 indicato."""
+def push_to_remote(bucket: str, path: str = "/home/jovyan/materials", *,
+                   config: Config | None = None, progress: bool = True,
+                   label: str | None = None) -> str:
+    """Comprime la cartella e carica l'archivio sul bucket S3 indicato.
+
+    Mostra due avanzamenti separati (compressione e upload) e un riepilogo
+    finale. Ritorna l'URI ``s3://...`` dell'oggetto caricato. Solleva
+    ``RuntimeError`` se l'upload fallisce (nessun fallimento silenzioso).
+    """
     cfg = _resolve_config(config)
-    compress_folder(path, config=cfg)
-    folder_name = path.rsplit("/", 1)[-1]
-    logger.info("Sending compressed %s to qc repo....", folder_name)
+    folder_name = os.path.basename(path.rstrip("/"))
+    label = label or f"Upload {folder_name}"
+
+    # Box 1: compressione
+    archive = compress_folder(path, config=cfg, progress=progress)
+    size = os.path.getsize(archive)
+
     ghb = cfg.github_branch or os.environ.get("GITHUB_BRANCH", "")
     jhub_user = cfg.jupyterhub_user or os.environ.get("JUPYTERHUB_USER", "")
     file_name = folder_name + "_" + jhub_user.replace(".", "_") + ".tar.gz"
-    remote_key = ghb + "/" + file_name
-    if not _upload_file_s3("/home/jovyan/" + file_name, bucket, remote_key, config=cfg):
+    remote_key = f"{ghb}/{file_name}" if ghb else file_name
+    uri = f"s3://{bucket}/{remote_key}"
+
+    # Box 2: upload
+    bar = _make_progress(size, f"☁️  Upload {folder_name} → S3", enabled=progress)
+    try:
+        ok = _upload_file_s3(archive, bucket, remote_key, config=cfg, callback=bar.update)
+    finally:
+        bar.close()
+
+    if not ok:
+        _user_msg(f"❌ {label} FALLITO — upload su {uri} non riuscito.")
         raise RuntimeError(
-            f"Upload su s3://{bucket}/{remote_key} fallito. Verifica le credenziali "
-            "AWS (env AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, ~/.aws/credentials, "
+            f"Upload su {uri} fallito. Verifica le credenziali AWS "
+            "(env AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, ~/.aws/credentials, "
             "IAM role del pod, oppure qcutils.init(aws_access_key_id=..., ...))."
         )
-    logger.info("%s is now on qc remote repo -> %s", folder_name, remote_key)
+
+    _user_msg(f"✅ {label} completato — {_human(size)} caricati su {uri}")
+    return uri
 
 
-def pull_from_remote(bucket: str, local_file_path: str, *, config: Config | None = None) -> str:
-    """Recupera l'archivio dell'utente dal bucket S3 indicato."""
+def pull_from_remote(bucket: str, local_file_path: str, *,
+                     config: Config | None = None, progress: bool = True) -> str:
+    """Recupera l'archivio dell'utente dal bucket S3 indicato, con avanzamento."""
     cfg = _resolve_config(config)
     if not local_file_path.endswith("/"):
         local_file_path = local_file_path + "/"
@@ -584,7 +768,13 @@ def pull_from_remote(bucket: str, local_file_path: str, *, config: Config | None
     for obj in s3_rs.Bucket(bucket).objects.filter(Prefix=ghb + "/"):
         if obj.key.endswith(file_name):
             dest = local_file_path + os.path.basename(obj.key)
-            s3_client.download_file(bucket, obj.key, dest)
+            bar = _make_progress(obj.size, f"⬇️  Download {os.path.basename(obj.key)}", enabled=progress)
+            try:
+                s3_client.download_file(bucket, obj.key, dest,
+                                        Callback=bar.update, Config=_transfer_config())
+            finally:
+                bar.close()
+            _user_msg(f"✅ Scaricato {_human(obj.size)} da s3://{bucket}/{obj.key}")
             return dest
     raise FileNotFoundError(f"Nessun archivio per l'utente in s3://{bucket}/{ghb}")
 
