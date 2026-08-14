@@ -42,12 +42,14 @@ from typing import Any, Callable, TypeVar
 
 logger = logging.getLogger("qcutils")
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 __all__ = [
     "__version__",
+    "QcutilsError", "S3UploadError", "S3DownloadError",
+    "push_file_to_remote", "doctor",
     "Config",
     "init",
     "get_config",
@@ -71,6 +73,23 @@ __all__ = [
 # =============================================================================
 # Deprecation helper
 # =============================================================================
+
+class QcutilsError(RuntimeError):
+    """Errore di qcutils.
+
+    Sottoclasse di ``RuntimeError`` di proposito: tutto il codice esistente che
+    fa ``except RuntimeError`` continua a intercettarla senza modifiche. Chi
+    vuole distinguere gli errori di qcutils da quelli di terzi ora puo' farlo.
+    """
+
+
+class S3UploadError(QcutilsError):
+    """L'upload su S3 non e' andato a buon fine."""
+
+
+class S3DownloadError(QcutilsError):
+    """Il download da S3 non ha trovato nulla, o non e' riuscito."""
+
 
 def _deprecated(msg: str) -> Callable[[_F], _F]:
     """Decorator riusabile: emette un ``DeprecationWarning`` all'invocazione."""
@@ -105,6 +124,7 @@ class Config:
     kafka_sasl_username: str = ""
     kafka_sasl_password: str = field(default="", repr=False)
     jupyterhub_user: str = ""
+    course: str = ""
     github_branch: str = ""
     github_repo: str = ""
     aws_region: str = ""
@@ -134,6 +154,7 @@ class Config:
             kafka_sasl_username=pick("kafka_sasl_username", "KAFKA_SASL_USERNAME"),
             kafka_sasl_password=pick("kafka_sasl_password", "KAFKA_SASL_PASSWORD"),
             jupyterhub_user=g("JUPYTERHUB_USER", ""),
+            course=pick("course", "COURSE_NAME"),
             github_branch=g("GITHUB_BRANCH", ""),
             github_repo=g("GITHUB_REPO", ""),
             aws_region=pick("aws_region", "AWS_DEFAULT_REGION"),
@@ -209,6 +230,74 @@ def init(
         _config.schema_registry_url or "-",
     )
     return _config
+
+
+def doctor(*, config: Config | None = None, check_network: bool = True) -> dict:
+    """Diagnosi: cosa vede qcutils da qui, e cosa non riesce a raggiungere.
+
+    Ritorna un dizionario (utile in un notebook o in un test) e stampa un
+    riepilogo leggibile. I segreti non compaiono mai: delle credenziali si dice
+    solo se ci sono.
+
+    Nasce perche' la stessa diagnosi era riscritta a mano dentro la CLI `qc`
+    dell'immagine, che poteva solo controllare se il modulo si importava.
+    """
+    cfg = _resolve_config(config)
+    extras = {}
+    for mod, extra in (("yaml", "config"), ("tabulate", "viz"), ("boto3", "s3"),
+                       ("tqdm", "progress"), ("confluent_kafka", "kafka")):
+        try:
+            __import__(mod); extras[extra] = True
+        except Exception:
+            extras[extra] = False
+
+    creds = _aws_credentials(cfg)
+    out = {
+        "version": __version__,
+        "initialized": cfg.initialized,
+        "extras": extras,
+        "config": {
+            "kafka_bootstrap": cfg.kafka_bootstrap,
+            "schema_registry_url": cfg.schema_registry_url or None,
+            "flink_rest_url": cfg.flink_rest_url or None,
+            "jupyterhub_user": cfg.jupyterhub_user or None,
+            "course": cfg.course or None,
+            "github_branch": cfg.github_branch or None,
+            "aws_region": cfg.aws_region or None,
+        },
+        "credentials": {
+            "aws": bool(creds.get("aws_access_key_id")) or "default-chain",
+            "kafka_sasl": bool(cfg.kafka_sasl_password),
+        },
+        "reachable": {},
+    }
+
+    if check_network:
+        import socket
+        host, _, port = cfg.kafka_bootstrap.partition(":")
+        try:
+            with socket.create_connection((host, int(port or 9092)), timeout=2):
+                out["reachable"]["kafka"] = True
+        except Exception:
+            out["reachable"]["kafka"] = False
+        if cfg.schema_registry_url:
+            import urllib.request
+            try:
+                urllib.request.urlopen(cfg.schema_registry_url + "/subjects", timeout=2)
+                out["reachable"]["schema_registry"] = True
+            except Exception:
+                out["reachable"]["schema_registry"] = False
+
+    print(f"qcutils {out['version']}  (init: {'si' if cfg.initialized else 'NO — chiama qcutils.init()'})")
+    print("  extra installati :", ", ".join(k for k, v in extras.items() if v) or "nessuno")
+    mancanti = [k for k, v in extras.items() if not v]
+    if mancanti:
+        print("  extra mancanti   :", ", ".join(mancanti), f"  (pip install 'qcutils[{mancanti[0]}]')")
+    print("  kafka            :", cfg.kafka_bootstrap,
+          "" if not check_network else ("raggiungibile" if out["reachable"].get("kafka") else "NON raggiungibile"))
+    print("  corso / utente   :", cfg.course or "?", "/", cfg.jupyterhub_user or "?")
+    print("  credenziali AWS  :", "presenti" if creds.get("aws_access_key_id") else "dalla default chain (o assenti)")
+    return out
 
 
 def get_config() -> Config:
@@ -535,7 +624,7 @@ def compress_folder(path: str = "/home/jovyan/materials", *,
     finally:
         bar.close()
     if not ok:
-        raise RuntimeError(f"Creazione archivio fallita per '{path}'")
+        raise QcutilsError(f"Creazione archivio fallita per '{path}'")
     logger.info("Archivio creato: %s (%s)", output_filename, _human(os.path.getsize(output_path)))
     return output_path
 
@@ -713,12 +802,26 @@ def create_kafka_topic(topic: str, partitions: int = 1, replication: int = 1,
 
 def push_to_remote(bucket: str, path: str = "/home/jovyan/materials", *,
                    config: Config | None = None, progress: bool = True,
-                   label: str | None = None) -> str:
+                   label: str | None = None, prefix: str | None = None,
+                   max_size_mb: int | None = None) -> str:
     """Comprime la cartella e carica l'archivio sul bucket S3 indicato.
 
     Mostra due avanzamenti separati (compressione e upload) e un riepilogo
     finale. Ritorna l'URI ``s3://...`` dell'oggetto caricato. Solleva
-    ``RuntimeError`` se l'upload fallisce (nessun fallimento silenzioso).
+    :class:`S3UploadError` (sottoclasse di ``RuntimeError``) se l'upload
+    fallisce: nessun fallimento silenzioso.
+
+    :param prefix: cartella dentro il bucket. **Default invariato**: il nome del
+        branch git, come e' sempre stato. Il branch pero' e' un *proxy* del
+        corso, non il corso: due corsi che usano lo stesso nome di branch
+        (``student``, ``main``) si scrivono sopra, e lo stesso studente in due
+        edizioni sovrascrive la propria consegna precedente. Passare
+        ``prefix=cfg.course`` — o qualunque stringa — separa le consegne.
+        ``prefix=""`` mette l'archivio nella radice del bucket.
+    :param max_size_mb: se la cartella compressa supera questa soglia, solleva
+        invece di caricare. Serve a non scoprire dopo dieci minuti di upload che
+        si stava spedendo una home intera. Default ``None`` = nessun limite,
+        cioe' il comportamento storico.
     """
     cfg = _resolve_config(config)
     folder_name = os.path.basename(path.rstrip("/"))
@@ -727,11 +830,18 @@ def push_to_remote(bucket: str, path: str = "/home/jovyan/materials", *,
     # Box 1: compressione
     archive = compress_folder(path, config=cfg, progress=progress)
     size = os.path.getsize(archive)
+    if max_size_mb is not None and size > max_size_mb * 1024 * 1024:
+        os.remove(archive)
+        raise QcutilsError(
+            f"L'archivio di '{path}' pesa {_human(size)}, oltre il limite di "
+            f"{max_size_mb} MB richiesto. Alza max_size_mb se e' voluto, "
+            f"oppure controlla cosa c'e' dentro la cartella.")
 
     ghb = cfg.github_branch or os.environ.get("GITHUB_BRANCH", "")
     jhub_user = cfg.jupyterhub_user or os.environ.get("JUPYTERHUB_USER", "")
     file_name = folder_name + "_" + jhub_user.replace(".", "_") + ".tar.gz"
-    remote_key = f"{ghb}/{file_name}" if ghb else file_name
+    key_prefix = ghb if prefix is None else prefix
+    remote_key = f"{key_prefix}/{file_name}" if key_prefix else file_name
     uri = f"s3://{bucket}/{remote_key}"
 
     # Box 2: upload
@@ -743,13 +853,51 @@ def push_to_remote(bucket: str, path: str = "/home/jovyan/materials", *,
 
     if not ok:
         _user_msg(f"❌ {label} FALLITO — upload su {uri} non riuscito.")
-        raise RuntimeError(
+        raise S3UploadError(
             f"Upload su {uri} fallito. Verifica le credenziali AWS "
             "(env AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, ~/.aws/credentials, "
             "IAM role del pod, oppure qcutils.init(aws_access_key_id=..., ...))."
         )
 
     _user_msg(f"✅ {label} completato — {_human(size)} caricati su {uri}")
+    return uri
+
+
+def push_file_to_remote(bucket: str, file_path: str, *,
+                        config: Config | None = None, progress: bool = True,
+                        prefix: str | None = None, key: str | None = None) -> str:
+    """Carica UN file su S3, senza comprimerlo.
+
+    :func:`push_to_remote` comprime una cartella, ed e' giusto per i materiali.
+    Per un artefatto singolo e gia' compresso — un ``.gguf``, uno zip, un
+    ``.parquet`` — tarrarlo e' lavoro e spazio buttati.
+
+    Stessa convenzione di chiave di :func:`push_to_remote`: prefisso (branch, o
+    quello che passi) piu' nome del file con lo username appeso.
+    """
+    cfg = _resolve_config(config)
+    if not os.path.isfile(file_path):
+        raise QcutilsError(f"Non e' un file: {file_path}")
+
+    size = os.path.getsize(file_path)
+    ghb = cfg.github_branch or os.environ.get("GITHUB_BRANCH", "")
+    jhub_user = cfg.jupyterhub_user or os.environ.get("JUPYTERHUB_USER", "")
+    if key is None:
+        stem, ext = os.path.splitext(os.path.basename(file_path))
+        key = f"{stem}_{jhub_user.replace('.', '_')}{ext}" if jhub_user else os.path.basename(file_path)
+    key_prefix = ghb if prefix is None else prefix
+    remote_key = f"{key_prefix}/{key}" if key_prefix else key
+    uri = f"s3://{bucket}/{remote_key}"
+
+    bar = _make_progress(size, f"☁️  Upload {os.path.basename(file_path)} → S3", enabled=progress)
+    try:
+        ok = _upload_file_s3(file_path, bucket, remote_key, config=cfg, callback=bar.update)
+    finally:
+        bar.close()
+    if not ok:
+        _user_msg(f"❌ Upload FALLITO — {uri}")
+        raise S3UploadError(f"Upload su {uri} fallito. Verifica le credenziali AWS.")
+    _user_msg(f"✅ {_human(size)} caricati su {uri}")
     return uri
 
 

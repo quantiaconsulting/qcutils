@@ -17,8 +17,8 @@ import qcutils
 # Versione e API pubblica
 # ---------------------------------------------------------------------------
 
-def test_version_is_1_1_0():
-    assert qcutils.__version__ == "1.1.0"
+def test_version_is_1_2_0():
+    assert qcutils.__version__ == "1.2.0"
 
 
 def test_public_api_present():
@@ -330,3 +330,108 @@ def test_push_to_remote_returns_s3_uri_and_calls_upload(monkeypatch, tmp_path):
     assert uri == "s3://quantia-bootcamp-results/hare2026/bootcamp_mario_rossi.tar.gz"
     assert captured["key"] == "hare2026/bootcamp_mario_rossi.tar.gz"
     assert captured["bucket"] == "quantia-bootcamp-results"
+
+
+# ---------------------------------------------------------------------------
+# 1.2.0: eccezioni tipizzate, prefisso della chiave, guardia di dimensione,
+#        upload di un file singolo, doctor()
+# ---------------------------------------------------------------------------
+
+def test_le_eccezioni_restano_runtime_error():
+    """Chi fa `except RuntimeError` non deve accorgersi di niente: e' il vincolo
+    che rende l'aggiunta retrocompatibile."""
+    assert issubclass(qcutils.QcutilsError, RuntimeError)
+    assert issubclass(qcutils.S3UploadError, qcutils.QcutilsError)
+    assert issubclass(qcutils.S3DownloadError, qcutils.QcutilsError)
+
+
+def test_upload_fallito_solleva_la_sottoclasse(monkeypatch, tmp_path):
+    archive = tmp_path / "materials_u.tar.gz"; archive.write_bytes(b"x" * 8)
+    monkeypatch.setattr(qcutils, "compress_folder",
+                        lambda path, *, config=None, progress=True: str(archive))
+    monkeypatch.setattr(qcutils, "_upload_file_s3", lambda *a, **k: False)
+    with pytest.raises(qcutils.S3UploadError):
+        qcutils.push_to_remote("b", "/tmp/materials", config=qcutils.Config.from_env(), progress=False)
+
+
+def test_config_legge_il_corso(monkeypatch):
+    monkeypatch.setenv("COURSE_NAME", "bip2026-gpu")
+    assert qcutils.Config.from_env().course == "bip2026-gpu"
+
+
+def _cattura_chiave(monkeypatch, tmp_path, **kwargs):
+    """Esegue push_to_remote e ritorna la chiave S3 che avrebbe usato."""
+    archive = tmp_path / "materials_mario_rossi.tar.gz"; archive.write_bytes(b"x" * 8)
+    monkeypatch.setattr(qcutils, "compress_folder",
+                        lambda path, *, config=None, progress=True: str(archive))
+    visto = {}
+    def finto_upload(file_name, bucket, object_name=None, **k):
+        visto["key"] = object_name; return True
+    monkeypatch.setattr(qcutils, "_upload_file_s3", finto_upload)
+    cfg = qcutils.Config.from_env(**kwargs.pop("cfg", {}))
+    qcutils.push_to_remote("b", "/tmp/materials", config=cfg, progress=False, **kwargs)
+    return visto["key"]
+
+
+def test_default_invariato_la_chiave_usa_il_branch(monkeypatch, tmp_path):
+    """Il comportamento storico non cambia: senza prefix, il prefisso e' il branch."""
+    monkeypatch.setenv("GITHUB_BRANCH", "student")
+    monkeypatch.setenv("JUPYTERHUB_USER", "mario.rossi")
+    assert _cattura_chiave(monkeypatch, tmp_path).startswith("student/")
+
+
+def test_prefix_esplicito_separa_le_consegne(monkeypatch, tmp_path):
+    monkeypatch.setenv("GITHUB_BRANCH", "student")
+    monkeypatch.setenv("JUPYTERHUB_USER", "mario.rossi")
+    k = _cattura_chiave(monkeypatch, tmp_path, prefix="bip2026-gpu")
+    assert k.startswith("bip2026-gpu/") and "mario_rossi" in k
+
+
+def test_prefix_vuoto_mette_in_radice(monkeypatch, tmp_path):
+    monkeypatch.setenv("GITHUB_BRANCH", "student")
+    monkeypatch.setenv("JUPYTERHUB_USER", "mario.rossi")
+    assert "/" not in _cattura_chiave(monkeypatch, tmp_path, prefix="")
+
+
+def test_max_size_mb_ferma_prima_di_caricare(monkeypatch, tmp_path):
+    archive = tmp_path / "grosso.tar.gz"; archive.write_bytes(b"x" * (3 * 1024 * 1024))
+    monkeypatch.setattr(qcutils, "compress_folder",
+                        lambda path, *, config=None, progress=True: str(archive))
+    caricato = {"si": False}
+    monkeypatch.setattr(qcutils, "_upload_file_s3",
+                        lambda *a, **k: caricato.__setitem__("si", True) or True)
+    with pytest.raises(qcutils.QcutilsError):
+        qcutils.push_to_remote("b", "/tmp/materials", config=qcutils.Config.from_env(),
+                               progress=False, max_size_mb=1)
+    assert caricato["si"] is False, "non deve nemmeno provare a caricare"
+
+
+def test_push_file_non_comprime(monkeypatch, tmp_path):
+    """Per un artefatto gia' compresso (un GGUF) il tar e' spreco: si carica com'e'."""
+    f = tmp_path / "modello.gguf"; f.write_bytes(b"y" * 32)
+    monkeypatch.setenv("JUPYTERHUB_USER", "mario.rossi")
+    monkeypatch.setattr(qcutils, "compress_folder",
+                        lambda *a, **k: pytest.fail("non deve comprimere"))
+    visto = {}
+    monkeypatch.setattr(qcutils, "_upload_file_s3",
+                        lambda fn, bucket, object_name=None, **k: visto.update(key=object_name) or True)
+    uri = qcutils.push_file_to_remote("b", str(f), config=qcutils.Config.from_env(),
+                                      progress=False, prefix="corso")
+    assert visto["key"] == "corso/modello_mario_rossi.gguf"
+    assert uri.startswith("s3://b/corso/")
+
+
+def test_push_file_su_cartella_solleva(tmp_path):
+    with pytest.raises(qcutils.QcutilsError):
+        qcutils.push_file_to_remote("b", str(tmp_path), config=qcutils.Config.from_env(),
+                                    progress=False)
+
+
+def test_doctor_non_stampa_segreti(monkeypatch, capsys):
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "segretissimo")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAPROVA")
+    d = qcutils.doctor(config=qcutils.Config.from_env(), check_network=False)
+    testo = capsys.readouterr().out
+    assert "segretissimo" not in testo and "AKIAPROVA" not in testo
+    assert "segretissimo" not in repr(d) and "AKIAPROVA" not in repr(d)
+    assert d["version"] == qcutils.__version__
